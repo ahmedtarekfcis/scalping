@@ -4,9 +4,10 @@ import random
 import time
 from typing import Callable, Dict, List, Optional
 import math
+from zoneinfo import ZoneInfo
 
 try:
-    from ib_insync import IB, Stock, util
+    from ib_insync import IB, Stock, ScannerSubscription, util
     util.patchAsyncio()
     IB_INSYNC_AVAILABLE = True
 except ImportError:
@@ -191,6 +192,158 @@ class IBKRMarketEngine:
         await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
         
         self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
+
+    async def scan_market(self):
+        """Scans for momentum stocks using IBKR scanner or mock data"""
+        if self.is_mock or not IB_INSYNC_AVAILABLE or not self.ib or not self.ib.isConnected():
+            # Mock scanner results
+            mock_results = [
+                {"symbol": "TSLA", "lastPrice": 218.50, "changePercent": 5.4, "volume": "45M", "rv": "2.4x", "freeFloat": "2.8B", "reason": "High Volatility", "trend": "up"},
+                {"symbol": "NVDA", "lastPrice": 118.20, "changePercent": 4.2, "volume": "38M", "rv": "1.8x", "freeFloat": "24B", "reason": "Sector Momentum", "trend": "up"},
+                {"symbol": "AMD", "lastPrice": 142.30, "changePercent": 3.8, "volume": "25M", "rv": "1.5x", "freeFloat": "1.6B", "reason": "Squeeze Potential", "trend": "up"},
+                {"symbol": "PLTR", "lastPrice": 28.50, "changePercent": 8.1, "volume": "55M", "rv": "4.2x", "freeFloat": "1.9B", "reason": "Unusual Volume", "trend": "up"},
+                {"symbol": "SMCI", "lastPrice": 850.20, "changePercent": 6.5, "volume": "12M", "rv": "3.1x", "freeFloat": "48M", "reason": "Breakout", "trend": "up"},
+                {"symbol": "GME", "lastPrice": 22.40, "changePercent": 12.3, "volume": "60M", "rv": "8.5x", "freeFloat": "305M", "reason": "Retail Surge", "trend": "up"},
+                {"symbol": "SNOW", "lastPrice": 130.10, "changePercent": -5.2, "volume": "15M", "rv": "1.2x", "freeFloat": "278M", "reason": "Dumping", "trend": "down"}
+            ]
+            await self.broadcast_callback({"type": "SCANNER_RESULTS", "data": mock_results})
+            return
+
+        try:
+            current_time = time.time()
+            if not getattr(self, '_last_scan_time', None):
+                self._last_scan_time = 0
+                
+            # Rate limit live IBKR scans to once every 10 seconds to prevent pacing violations and disconnects
+            if (current_time - self._last_scan_time) < 10:
+                return
+                
+            self._last_scan_time = current_time
+            
+            sub = ScannerSubscription(
+                instrument='STK',
+                locationCode='STK.US.MAJOR',
+                scanCode='HOT_BY_VOLUME',
+                abovePrice=1.5
+            )
+            scan_data = await self.ib.reqScannerDataAsync(sub)
+            
+            results = []
+            # Grab top 30 to give us enough buffer for custom python filtering
+            contracts = [item.contractDetails.contract for item in scan_data[:30]]
+            
+            # Qualify contracts first (essential for reqMktData)
+            await self.ib.qualifyContractsAsync(*contracts)
+            
+            # Request streaming market data with 165 (Misc Stats for Avg Volume).
+            # Note: Removed 258 (Fundamental Ratios) because it causes IBKR to reject the entire data feed if the user lacks the Reuters Fundamentals subscription.
+            tickers = [self.ib.reqMktData(c, '165,233', False, False) for c in contracts]
+            
+            # Wait up to 2.5s for data to populate
+            await asyncio.sleep(2.5)
+            
+            # Calculate minutes since open (EST) for vol/min calculation
+            now_est = datetime.datetime.now(ZoneInfo('America/New_York'))
+            market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
+            if now_est < market_open:
+                # Fallback to pre-market start
+                market_open = now_est.replace(hour=4, minute=0, second=0, microsecond=0)
+            minutes_since_open = max(1.0, (now_est - market_open).total_seconds() / 60.0)
+            
+            for i, item in enumerate(scan_data[:30]):
+                if len(results) >= 10:
+                    break
+                    
+                contract = item.contractDetails.contract
+                ticker = tickers[i]
+                
+                # Use ib_insync's marketPrice() helper which handles nan checks
+                last_price = ticker.marketPrice()
+                if math.isnan(last_price) or last_price == 0:
+                    last_price = None
+                    
+                close_price = ticker.close
+                if math.isnan(close_price) or close_price == 0:
+                    close_price = None
+                    
+                change_pct = None
+                if last_price and close_price:
+                    change_pct = ((last_price - close_price) / close_price) * 100
+                elif getattr(ticker, 'changePercent', None) and not math.isnan(ticker.changePercent):
+                    change_pct = ticker.changePercent
+                    
+                vol = ticker.volume
+                if math.isnan(vol):
+                    vol = None
+                    
+                # Vol/Min Filter (25k/min)
+                vol_per_min = (vol / minutes_since_open) if vol else 0
+                if vol_per_min < 25000:
+                    self.ib.cancelMktData(contract)
+                    continue
+
+                vol_str = "--"
+                if vol:
+                    if vol > 1000000:
+                        vol_str = f"{vol/1000000:.1f}M"
+                    elif vol > 1000:
+                        vol_str = f"{vol/1000:.1f}K"
+                    else:
+                        vol_str = str(int(vol))
+                        
+                # Calculate RV (Relative Volume)
+                rv = None
+                av_vol = getattr(ticker, 'avVolume', None)
+                if vol and av_vol and not math.isnan(av_vol) and av_vol > 0:
+                    # In IB, avVolume and volume might both be in hundreds, or actual shares. 
+                    # Assuming they are in the same unit.
+                    rv = vol / av_vol
+                
+                # Extract Free Float
+                free_float = None
+                fr = getattr(ticker, 'fundamentalRatios', None)
+                if fr:
+                    # Depending on ib_insync version, fr might be a namedtuple or object
+                    float_val = getattr(fr, 'FLOAT', None) or getattr(fr, 'Float', None)
+                    if float_val:
+                        free_float = float_val
+                
+                # Formatter helper
+                def format_large(num):
+                    if not num: return "--"
+                    try:
+                        n = float(num)
+                        if n > 1000000: return f"{n/1000000:.1f}M"
+                        if n > 1000: return f"{n/1000:.1f}K"
+                        return str(int(n))
+                    except:
+                        return "--"
+                        
+                results.append({
+                    "symbol": contract.symbol,
+                    "lastPrice": round(last_price, 2) if last_price else "--", 
+                    "changePercent": round(change_pct, 2) if change_pct is not None else "--",
+                    "volume": vol_str,
+                    "rv": f"{rv:.1f}x" if rv else "--",
+                    "freeFloat": format_large(free_float),
+                    "reason": "Momentum",
+                    "trend": "up" if (change_pct and change_pct > 0) else "down"
+                })
+                
+                # Clean up subscriptions
+                self.ib.cancelMktData(contract)
+                
+            # Clean up any leftover subscriptions if we exited early
+            for i in range(len(results), len(tickers)):
+                try:
+                    self.ib.cancelMktData(scan_data[i].contractDetails.contract)
+                except:
+                    pass
+                
+            await self.broadcast_callback({"type": "SCANNER_RESULTS", "data": results})
+        except Exception as e:
+            print(f"Scanner error: {e}")
+            await self.broadcast_callback({"type": "ERROR", "data": {"message": f"Scanner failed: {e}"}})
 
     async def _fetch_historical_data_with_retry(self, symbol: str):
         """Fetches 1D 1-min bars for EMA/VWAP calculation with exponential backoff on failure."""

@@ -97,6 +97,7 @@ class SurgePrediction(BaseModel):
     hh_hl_detail: str = ""
     # New tracking fields
     squeeze_score: int = 0
+    flush_score: int = 0
     target_distance: float = 0.0
     meets_bullish_criteria: bool = False
     meets_bearish_criteria: bool = False
@@ -154,6 +155,7 @@ class IntelligenceState(BaseModel):
     
     last_update_time: Optional[float] = None
     last_mtf_update_time: Optional[float] = None
+    active_setup: Optional[Dict] = None
     
     # Live Liquidity Tracking Layer (Separate from MTF)
     live_liquidity_bids: Dict[float, LiquidityWall] = {}
@@ -618,16 +620,19 @@ class QuantEngine:
         Bullish: Price > VWAP, Price > 9 EMA, Price > 21 EMA, Price > 200 EMA
         Bearish: Price < VWAP, Price < 9 EMA, Price < 21 EMA, Price < 200 EMA
         """
-        is_above_vwap = current_price > (self.state.vwap or 0.0)
-        is_above_9ema = current_price > (self.state.ema_9 or 0.0)
-        is_above_21ema = current_price > (self.state.ema_21 or 0.0)
-        is_above_200ema = current_price > (self.state.ema_200 or 0.0)
+        if None in [self.state.vwap, self.state.ema_9, self.state.ema_21, self.state.ema_200]:
+            return False, False
+            
+        is_above_vwap = current_price > self.state.vwap
+        is_above_9ema = current_price > self.state.ema_9
+        is_above_21ema = current_price > self.state.ema_21
+        is_above_200ema = current_price > self.state.ema_200
         meets_bullish = is_above_vwap and is_above_9ema and is_above_21ema and is_above_200ema
         
-        is_below_vwap = current_price < (self.state.vwap or 999999.0)
-        is_below_9ema = current_price < (self.state.ema_9 or 999999.0)
-        is_below_21ema = current_price < (self.state.ema_21 or 999999.0)
-        is_below_200ema = current_price < (self.state.ema_200 or 999999.0)
+        is_below_vwap = current_price < self.state.vwap
+        is_below_9ema = current_price < self.state.ema_9
+        is_below_21ema = current_price < self.state.ema_21
+        is_below_200ema = current_price < self.state.ema_200
         meets_bearish = is_below_vwap and is_below_9ema and is_below_21ema and is_below_200ema
             
         return meets_bullish, meets_bearish
@@ -833,23 +838,31 @@ class QuantEngine:
             if price_moved_down and total_vol > 1000:
                 # Bull Trap Fake-out: Heavy buying but price is dropping (Absorption by sellers)
                 flush_score = self._calculate_flush_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_down, current_price, nearest_floor, self.state.order_flow_anomaly)
-                direction = "POTENTIAL_FLUSH" if flush_score > 75 else "DUMPING_DOWN"
-                target_price = max(downside_candidates) if downside_candidates else round(current_price - 0.20, 2)
-                confidence = self._calculate_confidence_score(direction, current_price, flush_score, nearest_floor, nearest_ceiling, is_10s_uptrend, target_price)
-                speed = "EXPLOSIVE"
-                catalyst = f"BULL TRAP (Buyers Absorbed). Flush Score: {flush_score}"
-                squeeze_score = flush_score
+                flush_score_val = flush_score
+                squeeze_score = 0
+                
+                if not meets_bearish:
+                    direction = "CONSOLIDATING"
+                    target_price = max(downside_candidates) if downside_candidates else round(current_price - 0.10, 2)
+                    catalyst = "Waiting till tradable (Criteria not met for flush)"
+                else:
+                    direction = "POTENTIAL_FLUSH" if flush_score > 75 else "DUMPING_DOWN"
+                    target_price = max(downside_candidates) if downside_candidates else round(current_price - 0.20, 2)
+                    confidence = self._calculate_confidence_score(direction, current_price, flush_score, nearest_floor, nearest_ceiling, is_10s_uptrend, target_price)
+                    speed = "EXPLOSIVE"
+                    catalyst = f"BULL TRAP (Buyers Absorbed). Flush Score: {flush_score}"
             else:
                 squeeze_score = self._calculate_squeeze_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_up, current_price, nearest_ceiling, self.state.order_flow_anomaly)
+                flush_score_val = 0
                 
                 if not meets_bullish:
                     direction = "WAITING_10S_UPTREND"
                     target_price = min(upside_candidates) if upside_candidates else round(current_price + 0.10, 2)
-                    catalyst = f"Waiting to fulfill criteria (Price > VWAP & 9EMA). Score: {squeeze_score}"
+                    catalyst = "Waiting till tradable..."
                 elif not is_10s_uptrend:
                     direction = "WAITING_10S_UPTREND"
                     target_price = min(upside_candidates) if upside_candidates else round(current_price + 0.10, 2)
-                    catalyst = f"Waiting for 10s HH/HL. Score: {squeeze_score}"
+                    catalyst = "Waiting for 10s HH/HL setup..."
                 else:
                     if squeeze_score > 75:
                         direction = "POTENTIAL_SQUEEZE"
@@ -865,38 +878,106 @@ class QuantEngine:
             if price_moved_up and total_vol > 1000:
                 # Bear Trap Fake-out: Heavy selling but price is rising (Absorption by buyers)
                 squeeze_score = self._calculate_squeeze_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_up, current_price, nearest_ceiling, self.state.order_flow_anomaly)
-                direction = "POTENTIAL_SQUEEZE" if squeeze_score > 75 else "MOMENTUM_SURGE"
-                target_price = min(upside_candidates) if upside_candidates else round(current_price + 0.20, 2)
-                confidence = self._calculate_confidence_score(direction, current_price, squeeze_score, nearest_floor, nearest_ceiling, is_10s_uptrend, target_price)
-                speed = "EXPLOSIVE"
-                catalyst = f"BEAR TRAP (Sellers Absorbed). Squeeze Score: {squeeze_score}"
+                flush_score_val = 0
+                
+                if not meets_bullish:
+                    direction = "WAITING_10S_UPTREND"
+                    target_price = min(upside_candidates) if upside_candidates else round(current_price + 0.10, 2)
+                    catalyst = "Waiting till tradable (Criteria not met for squeeze)"
+                else:
+                    direction = "POTENTIAL_SQUEEZE" if squeeze_score > 75 else "MOMENTUM_SURGE"
+                    target_price = min(upside_candidates) if upside_candidates else round(current_price + 0.20, 2)
+                    confidence = self._calculate_confidence_score(direction, current_price, squeeze_score, nearest_floor, nearest_ceiling, is_10s_uptrend, target_price)
+                    speed = "EXPLOSIVE"
+                    catalyst = f"BEAR TRAP (Sellers Absorbed). Squeeze Score: {squeeze_score}"
             else:
-                squeeze_score = self._calculate_flush_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_down, current_price, nearest_floor, self.state.order_flow_anomaly)
+                flush_score_val = self._calculate_flush_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_down, current_price, nearest_floor, self.state.order_flow_anomaly)
+                squeeze_score = 0
                 
                 if not meets_bearish:
                     direction = "CONSOLIDATING"
                     target_price = max(downside_candidates) if downside_candidates else round(current_price - 0.10, 2)
-                    catalyst = f"Waiting to fulfill criteria (Price < VWAP & 9EMA). Score: {squeeze_score}"
+                    catalyst = "Waiting till tradable..."
                 elif is_10s_uptrend:
                     direction = "CONSOLIDATING"
                     target_price = max(downside_candidates) if downside_candidates else round(current_price - 0.10, 2)
-                    catalyst = f"Waiting for 10s Downtrend (LH/LL). Score: {squeeze_score}"
+                    catalyst = "Waiting for 10s Downtrend (LH/LL)..."
                 else:
-                    if squeeze_score > 75:
+                    if flush_score_val > 75:
                         direction = "POTENTIAL_FLUSH"
                     else:
                         direction = "DUMPING_DOWN"
                         
                     target_price = max(downside_candidates) if downside_candidates else round(current_price - 0.20, 2)
-                    confidence = self._calculate_confidence_score(direction, current_price, squeeze_score, nearest_floor, nearest_ceiling, is_10s_uptrend, target_price)
-                    speed = "EXPLOSIVE" if (tape_speed > 3.0 or squeeze_score > 85) else ("FAST" if tape_speed > 1.2 else "STEADY")
-                    catalyst = f"Flush Score {squeeze_score}: Targeting {target_price}"
+                    confidence = self._calculate_confidence_score(direction, current_price, flush_score_val, nearest_floor, nearest_ceiling, is_10s_uptrend, target_price)
+                    speed = "EXPLOSIVE" if (tape_speed > 3.0 or flush_score_val > 85) else ("FAST" if tape_speed > 1.2 else "STEADY")
+                    catalyst = f"Flush Score {flush_score_val}: Targeting {target_price}"
         else:
             direction = "CONSOLIDATING"
             catalyst = f"Range corridor: Bid Floor ${floor_price:.2f} ↔ Ask Ceiling ${ceiling_price:.2f} ({hh_hl_detail})"
+            squeeze_score = 0
+            flush_score_val = 0
 
         price_delta = round(target_price - current_price, 2)
         price_delta_pct = round((price_delta / current_price) * 100, 2) if current_price else 0.0
+
+        # --- ACTIVE SETUP STATE MACHINE ---
+        if self.state.active_setup:
+            setup = self.state.active_setup
+            is_long = setup['direction'] in ["POTENTIAL_SQUEEZE", "MOMENTUM_SURGE", "SURGING_UP"]
+            
+            invalidated = False
+            invalidation_reason = ""
+            
+            # Setup invalidation rules: Stop Loss OR Core Criteria broken
+            if is_long:
+                if current_price < setup['stop_price']:
+                    invalidated = True
+                    invalidation_reason = "STOP LOSS BROKEN. Waiting for move and pullback..."
+                elif not meets_bullish:
+                    invalidated = True
+                    invalidation_reason = "CRITERIA FAILED (Red). Waiting till tradable..."
+            else:
+                if current_price > setup['stop_price']:
+                    invalidated = True
+                    invalidation_reason = "STOP LOSS BROKEN. Waiting for move and pullback..."
+                elif not meets_bearish:
+                    invalidated = True
+                    invalidation_reason = "CRITERIA FAILED (Green). Waiting till tradable..."
+                
+            if invalidated:
+                self.state.active_setup = None
+                direction = "WAITING_10S_UPTREND" if is_long else "CONSOLIDATING"
+                catalyst = invalidation_reason
+            else:
+                # Override direction and target to keep box open and stable
+                direction = setup['direction']
+                target_price = setup['target_price']
+                if is_long:
+                    floor_price = setup['stop_price']
+                else:
+                    ceiling_price = setup['stop_price']
+                catalyst = f"ACTIVE SETUP | Stop Loss: ${setup['stop_price']:.2f}"
+                
+                # Recalculate deltas with forced target
+                price_delta = round(target_price - current_price, 2)
+                price_delta_pct = round((price_delta / current_price) * 100, 2) if current_price else 0.0
+        else:
+            # Check if we should lock in a new setup
+            # We lock it in if the AI generated a strong directional prediction
+            if direction in ["POTENTIAL_SQUEEZE", "MOMENTUM_SURGE"] and confidence >= 60:
+                self.state.active_setup = {
+                    'direction': direction,
+                    'target_price': target_price,
+                    'stop_price': floor_price
+                }
+            elif direction in ["POTENTIAL_FLUSH", "DUMPING_DOWN"] and confidence >= 60:
+                self.state.active_setup = {
+                    'direction': direction,
+                    'target_price': target_price,
+                    'stop_price': ceiling_price
+                }
+        # ----------------------------------
 
         self.state.surge_prediction = SurgePrediction(
             direction=direction,
@@ -915,6 +996,7 @@ class QuantEngine:
             trend_status=trend_status,
             hh_hl_detail=hh_hl_detail,
             squeeze_score=squeeze_score,
+            flush_score=flush_score_val,
             target_distance=abs(price_delta),
             meets_bullish_criteria=meets_bullish,
             meets_bearish_criteria=meets_bearish

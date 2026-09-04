@@ -61,6 +61,10 @@ export const useMarketStore = defineStore('market', {
       order_flow_anomaly: null
     },
     
+    // Scanner
+    scannerResults: [],
+    isScanning: false,
+    
     // WebSocket
     ws: null,
     wsConnected: false,
@@ -84,13 +88,31 @@ export const useMarketStore = defineStore('market', {
       const intel = state.intelligence || {};
       const sp = intel.surge_prediction;
       
+      const isMissingCriteria = !intel.vwap || !intel.ema_9 || !intel.ema_21 || !intel.ema_200;
+
+      if (isMissingCriteria) {
+        return {
+          ...(sp || {}),
+          direction: 'WAITING_10S_UPTREND',
+          catalyst: 'waiting to fulfill critrias',
+          target_price: state.lastPrice,
+          current_price: state.lastPrice,
+          price_delta: 0,
+          price_delta_pct: 0,
+          confidence: 50,
+          speed: 'STEADY',
+          meets_bullish_criteria: false,
+          meets_bearish_criteria: false
+        };
+      }
+
       if (sp) {
         // Strictly enforce criteria as the master gate
         if (!sp.meets_bullish_criteria && !sp.meets_bearish_criteria) {
           return {
             ...sp,
             direction: 'WAITING_10S_UPTREND',
-            catalyst: 'waiting to fulfill criteria'
+            catalyst: 'waiting to fulfill critrias'
           };
         }
 
@@ -189,6 +211,11 @@ export const useMarketStore = defineStore('market', {
 
         case 'INTELLIGENCE_UPDATE':
           this.intelligence = { ...this.intelligence, ...msg.data };
+          break;
+
+        case 'SCANNER_RESULTS':
+          this.scannerResults = msg.data || [];
+          this.isScanning = false;
           break;
 
         case 'ERROR':
@@ -377,6 +404,15 @@ export const useMarketStore = defineStore('market', {
     refetchMtf() {
       if (this.ws && this.ws.readyState === WebSocket.OPEN && this.symbol) {
         this.ws.send(JSON.stringify({ action: 'REFETCH_MTF', symbol: this.symbol }));
+      }
+    },
+
+    scanMarket(isBackground = false) {
+      if (!isBackground) {
+        this.isScanning = true;
+      }
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ action: 'SCAN' }));
       }
     },
 

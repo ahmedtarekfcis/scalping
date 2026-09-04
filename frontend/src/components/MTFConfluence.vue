@@ -16,11 +16,10 @@
       <!-- Section 1: MTF Floors & Walls Table -->
       <div class="mtf-section">
         <div class="momentum-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h3 class="font-bold" style="color: var(--text-primary);">MTF Confluence Levels</h3>
+          <h3 class="font-bold" style="color: var(--text-primary);">MTF</h3>
           <button 
             @click="store.refetchMtf()" 
             class="btn-refresh-criteria" 
-            :disabled="!store.intelligence.mtf_levels || store.intelligence.mtf_levels.length === 0"
             title="Refetch S&R Levels"
           >
             {{ (!store.intelligence.mtf_levels || store.intelligence.mtf_levels.length === 0) ? '↻ Loading...' : '↻ Refresh' }}
@@ -74,7 +73,6 @@
           <button 
             @click="store.refetchCriteria()" 
             class="btn-refresh-criteria" 
-            :disabled="!store.intelligence.ema_9"
             title="Refetch Moving Averages"
           >
             {{ !store.intelligence.ema_9 ? '↻ Loading...' : '↻ Refresh' }}
@@ -101,13 +99,35 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, onUnmounted } from 'vue';
 import { useMarketStore } from '../stores/marketStore';
 
 const store = useMarketStore();
 
 const flashCriteria = ref(false);
 const flashMtf = ref(false);
+
+let retryTimeout = null;
+
+watch(
+  () => store.symbol,
+  () => {
+    // When symbol changes, set a timeout to automatically retry fetching if it fails to load within 4 seconds
+    if (retryTimeout) clearTimeout(retryTimeout);
+    retryTimeout = setTimeout(() => {
+      if (!store.intelligence?.ema_9) {
+        store.refetchCriteria();
+      }
+      if (!store.intelligence?.mtf_levels || store.intelligence.mtf_levels.length === 0) {
+        store.refetchMtf();
+      }
+    }, 4000);
+  }
+);
+
+onUnmounted(() => {
+  if (retryTimeout) clearTimeout(retryTimeout);
+});
 
 watch(() => store.intelligence?.last_update_time, (newVal, oldVal) => {
   if (newVal && newVal !== oldVal) {

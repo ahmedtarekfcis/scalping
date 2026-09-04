@@ -1,31 +1,46 @@
 <template>
   <div class="app-layout">
     <!-- Top Nav / Ticker Bar -->
-    <HeaderBar @open-settings="showSettings = true" />
+    <HeaderBar 
+      :current-page="currentPage"
+      @open-settings="showSettings = true" 
+      @go-scanner="currentPage = 'scanner'"
+      @go-dashboard="currentPage = 'dashboard'"
+    />
 
     <div v-if="store.isLoading" class="global-loader-overlay">
       <div class="spinner"></div>
       <div class="loader-text">CONNECTING TO LEVEL 2 & TAPE DATA...</div>
     </div>
 
-    <!-- Main Scalping Dashboard Grid -->
-    <main class="dashboard-grid" :class="{ 'is-loading': store.isLoading }">
-      <!-- Left Column: Level 2 & Time and Sales -->
-      <section class="grid-col left-panel-col">
-        <div class="l2-tape-split">
-          <div class="book-container">
-            <OrderBook />
+    <!-- Main Content Area -->
+    <main class="main-content" :class="{ 'is-loading': store.isLoading }">
+      
+      <!-- Scalping Dashboard Grid -->
+      <div v-if="currentPage === 'dashboard'" class="dashboard-grid">
+        <!-- Left Column: Level 2 & Time and Sales -->
+        <section class="grid-col left-panel-col">
+          <div class="l2-tape-split">
+            <div class="book-container">
+              <OrderBook />
+            </div>
+            <div class="tape-container">
+              <TimeAndSales />
+            </div>
           </div>
-          <div class="tape-container">
-            <TimeAndSales />
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Right Column: MTF Confluence & Price Action/Momentum -->
-      <section class="grid-col right-panel-col">
-        <MTFConfluence />
-      </section>
+        <!-- Right Column: MTF Confluence & Price Action/Momentum -->
+        <section class="grid-col right-panel-col">
+          <MTFConfluence />
+        </section>
+      </div>
+
+      <!-- Scanner View -->
+      <div v-if="currentPage === 'scanner'" class="scanner-wrapper">
+        <ScannerView @trade="handleTradeFromScanner" />
+      </div>
+
     </main>
 
     <!-- Settings & IBKR Connection Modal -->
@@ -41,12 +56,23 @@ import OrderBook from './components/OrderBook.vue';
 import TimeAndSales from './components/TimeAndSales.vue';
 import MTFConfluence from './components/MTFConfluence.vue';
 import ConfigModal from './components/ConfigModal.vue';
+import ScannerView from './scanner/ScannerView.vue';
 
 const store = useMarketStore();
 const showSettings = ref(false);
+const currentPage = ref('dashboard'); // 'dashboard' | 'scanner'
+
+function handleTradeFromScanner(symbol) {
+  currentPage.value = 'dashboard';
+}
 
 onMounted(() => {
   store.initWebSocket();
+  
+  // Auto-scan market every 1 second in the background
+  setInterval(() => {
+    store.scanMarket(true);
+  }, 1000);
 });
 </script>
 
@@ -61,18 +87,33 @@ onMounted(() => {
   background: radial-gradient(circle at 50% 0%, #151d2e 0%, var(--bg-primary) 70%);
 }
 
+/* Removed nav-tabs CSS */
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  transition: opacity 0.3s ease;
+}
+
+.main-content.is-loading {
+  opacity: 0.2;
+  pointer-events: none;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1fr 360px;
   gap: 16px;
   flex: 1;
-  min-height: 0; /* Important for inner overflow */
-  transition: opacity 0.3s ease;
+  min-height: 0;
 }
 
-.dashboard-grid.is-loading {
-  opacity: 0.2;
-  pointer-events: none;
+.scanner-wrapper {
+  flex: 1;
+  display: flex;
+  min-height: 0;
 }
 
 .global-loader-overlay {

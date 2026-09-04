@@ -118,6 +118,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "REFETCH_MTF":
                     symbol = msg.get("symbol", "TSLA")
                     await engine.refetch_mtf_data(symbol)
+                elif action == "SCAN":
+                    asyncio.create_task(engine.scan_market())
                 elif action == "PING":
                     await websocket.send_text(json.dumps({"type": "PONG"}))
             except Exception as e:

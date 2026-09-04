@@ -11,7 +11,14 @@ watch(() => store.symbol, (newVal) => {
   }
 });
 
-const emit = defineEmits(['open-settings']);
+const props = defineProps({
+  currentPage: {
+    type: String,
+    default: 'dashboard'
+  }
+});
+
+const emit = defineEmits(['open-settings', 'go-scanner', 'go-dashboard']);
 
 function handleSymbolSubmit() {
   if (inputSymbol.value) {
@@ -32,8 +39,8 @@ const statusText = computed(() => {
 });
 
 const surgeDirection = computed(() => store.intelligence?.surge_prediction?.direction || 'CONSOLIDATING');
-const isSqueeze = computed(() => surgeDirection.value === 'SURGING_UP');
-const isFlush = computed(() => surgeDirection.value === 'DUMPING_DOWN');
+const isSqueeze = computed(() => surgeDirection.value === 'SURGING_UP' || surgeDirection.value === 'POTENTIAL_SQUEEZE');
+const isFlush = computed(() => surgeDirection.value === 'DUMPING_DOWN' || surgeDirection.value === 'POTENTIAL_FLUSH');
 
 const anomaly = computed(() => store.intelligence?.order_flow_anomaly);
 
@@ -55,6 +62,8 @@ const activeAnomalyText = computed(() => {
 });
 
 const voiceEnabled = ref(true);
+let audioCtx = null;
+let flushBeepInterval = null;
 
 function speak(text) {
   if (!voiceEnabled.value || !('speechSynthesis' in window)) return;
@@ -64,12 +73,61 @@ function speak(text) {
   window.speechSynthesis.speak(utterance);
 }
 
+function playBeep() {
+  if (!voiceEnabled.value) return;
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+  
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(850, audioCtx.currentTime); // High pitch for parking sensor
+  
+  gain.gain.setValueAtTime(0, audioCtx.currentTime);
+  gain.gain.linearRampToValueAtTime(0.02, audioCtx.currentTime + 0.02);
+  gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.08);
+  
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.1);
+}
+
+const flushScore = computed(() => store.intelligence?.surge_prediction?.flush_score || 0);
+
+watch(flushScore, (newScore) => {
+  if (flushBeepInterval) {
+    clearInterval(flushBeepInterval);
+    flushBeepInterval = null;
+  }
+  
+  // If the score is meaningful, start beeping
+  if (newScore >= 30 && isFlush.value) {
+    // Score [30, 100] maps to Interval [800ms, 80ms]
+    const intervalMs = Math.max(80, 800 - ((newScore - 30) * 10.28));
+    flushBeepInterval = setInterval(playBeep, intervalMs);
+  }
+});
+
 watch(surgeDirection, (newVal, oldVal) => {
   if (newVal !== oldVal) {
-    if (newVal === 'SURGING_UP') {
+    if (newVal === 'POTENTIAL_SQUEEZE' || newVal === 'MOMENTUM_SURGE' || newVal === 'SURGING_UP') {
       speak("Potential Squeeze");
-    } else if (newVal === 'DUMPING_DOWN') {
-      speak("Potential Flush");
+    } else if (newVal === 'DUMPING_DOWN' || newVal === 'POTENTIAL_FLUSH') {
+      // Voice removed for flush, replaced by the car sensor beep above
+    }
+    
+    // Clear beep if no longer dumping down
+    if (newVal !== 'DUMPING_DOWN' && newVal !== 'POTENTIAL_FLUSH') {
+      if (flushBeepInterval) {
+        clearInterval(flushBeepInterval);
+        flushBeepInterval = null;
+      }
     }
   }
 });
@@ -140,29 +198,45 @@ function toggleVoice() {
 
 <template>
   <div class="market-header glass-panel">
-    <!-- Left: Symbol Search -->
-    <div class="symbol-section">
+    
+    <!-- Floating Toast Alerts for Squeeze, Flush, and Anomaly -->
+    <div class="toast-container" v-if="isSqueeze || isFlush || hasHighRiskAnomaly">
+      <div v-if="isSqueeze" class="toast-alert squeeze-alert mono">
+        🚀 POTENTIAL SQUEEZE
+      </div>
+      <div v-if="isFlush" class="toast-alert flush-alert mono">
+        🔻 POTENTIAL FLUSH (SCORE: {{ flushScore }})
+      </div>
+      <div v-if="hasHighRiskAnomaly" class="toast-alert anomaly-alert mono" :class="activeAnomalyClass">
+        {{ activeAnomalyText }}
+      </div>
+    </div>
+
+    <!-- Left & Center: Symbol Search + Scanner Chips -->
+    <div class="symbol-and-chips">
       <div class="symbol-search-wrap">
         <input 
           v-model="inputSymbol" 
           @keyup.enter="handleSymbolSubmit"
-          placeholder="SEARCH SYMBOL..." 
+          placeholder="SYMBOL..." 
           class="symbol-input mono"
         />
-        <button @click="handleSymbolSubmit" class="btn-symbol-go">GO</button>
       </div>
-    </div>
 
-    <!-- Center: Alerts -->
-    <div class="alert-section" v-if="isSqueeze || isFlush || hasHighRiskAnomaly">
-      <div v-if="isSqueeze" class="surge-alert squeeze-alert mono">
-        POTENTIAL SQUEEZE
-      </div>
-      <div v-if="isFlush" class="surge-alert flush-alert mono">
-        POTENTIAL FLUSH
-      </div>
-      <div v-if="hasHighRiskAnomaly" class="surge-alert anomaly-alert mono" :class="activeAnomalyClass">
-        {{ activeAnomalyText }}
+      <div class="chips-container">
+        <button 
+          v-for="item in store.scannerResults.slice(0, 5)" 
+          :key="item.symbol"
+          class="scan-chip mono"
+          :class="{ 'chip-up': item.trend === 'up', 'chip-down': item.trend === 'down' }"
+          @click="store.changeSymbol(item.symbol)"
+          :title="item.reason"
+        >
+          {{ item.symbol }} <span class="chip-change">{{ item.changePercent > 0 ? '+' : '' }}{{ item.changePercent }}%</span>
+        </button>
+        <span v-if="!store.scannerResults || store.scannerResults.length === 0" class="text-muted" style="font-size: 11px;">
+          No recent scans
+        </span>
       </div>
     </div>
 
@@ -178,6 +252,12 @@ function toggleVoice() {
       <button @click="$emit('open-settings')" class="btn-config" title="Connection Settings">
         ⚙ Config
       </button>
+      <button v-if="currentPage === 'dashboard'" @click="$emit('go-scanner')" class="btn-config text-glow-orange" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);">
+        🔥 SCANNER
+      </button>
+      <button v-else @click="$emit('go-dashboard')" class="btn-config text-glow-blue" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
+        ⬅ DASHBOARD
+      </button>
     </div>
   </div>
 </template>
@@ -192,10 +272,11 @@ function toggleVoice() {
   flex-wrap: wrap;
 }
 
-.symbol-section {
+.symbol-and-chips {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 16px;
+  flex: 1;
 }
 
 .symbol-search-wrap {
@@ -211,27 +292,12 @@ function toggleVoice() {
   border: none;
   padding: 8px 12px;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 800;
-  width: 140px;
+  width: 110px;
   outline: none;
   text-transform: uppercase;
-}
-
-.btn-symbol-go {
-  background: var(--bg-tertiary);
-  border: none;
-  border-left: 1px solid var(--border-color);
-  color: var(--text-secondary);
-  padding: 0 14px;
-  cursor: pointer;
-  font-weight: 800;
-  font-size: 12px;
-  transition: all 0.2s ease;
-}
-.btn-symbol-go:hover {
-  background: var(--accent-blue);
-  color: #fff;
+  text-align: center;
 }
 
 .status-section {
@@ -324,35 +390,45 @@ function toggleVoice() {
   text-shadow: 0 0 10px var(--red-ask);
 }
 
-.alert-section {
+.toast-container {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
-  justify-content: center;
-  align-items: center;
-  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 9999;
+  pointer-events: none;
 }
 
-.surge-alert {
-  font-size: 16px;
+.toast-alert {
+  font-size: 14px;
   font-weight: 900;
-  padding: 6px 16px;
+  padding: 10px 24px;
   border-radius: 8px;
   letter-spacing: 1px;
-  animation: extreme-pulse 1s infinite alternate;
   text-transform: uppercase;
+  animation: slideDown 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards, extreme-pulse 1s infinite alternate;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+  pointer-events: auto;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .squeeze-alert {
-  background: rgba(0, 208, 132, 0.2);
-  color: #00ff88;
+  background: rgba(0, 208, 132, 0.9);
+  color: #052e16;
   border: 1px solid #00ff88;
-  box-shadow: 0 0 15px rgba(0, 208, 132, 0.4);
 }
 
 .flush-alert {
-  background: rgba(255, 59, 86, 0.2);
-  color: #ff3b56;
+  background: rgba(255, 59, 86, 0.9);
+  color: #fff;
   border: 1px solid #ff3b56;
-  box-shadow: 0 0 15px rgba(255, 59, 86, 0.4);
 }
 
 .anomaly-alert {
@@ -361,21 +437,73 @@ function toggleVoice() {
 }
 
 .anomaly-bid {
-  background: rgba(0, 208, 132, 0.15);
-  color: var(--green-bid);
-  border: 1px solid rgba(0, 208, 132, 0.35);
-  box-shadow: 0 0 15px rgba(0, 208, 132, 0.4);
+  background: rgba(0, 208, 132, 0.8);
+  color: #fff;
+  border: 1px solid #00d084;
 }
 
 .anomaly-ask {
-  background: rgba(255, 59, 86, 0.15);
-  color: var(--red-ask);
-  border: 1px solid rgba(255, 59, 86, 0.35);
-  box-shadow: 0 0 15px rgba(255, 59, 86, 0.4);
+  background: rgba(255, 59, 86, 0.8);
+  color: #fff;
+  border: 1px solid #ff3b56;
 }
 
 @keyframes extreme-pulse {
-  0% { transform: scale(1); opacity: 0.9; }
+  0% { transform: scale(1); opacity: 0.95; }
   100% { transform: scale(1.05); opacity: 1; box-shadow: 0 0 20px currentColor; }
 }
+
+/* Scanner Chips */
+.chips-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scan-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  padding: 5px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 900;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scan-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.chip-up {
+  border-color: rgba(0, 208, 132, 0.3);
+}
+
+.chip-up:hover {
+  background: rgba(0, 208, 132, 0.15);
+  border-color: #00d084;
+}
+
+.chip-down {
+  border-color: rgba(255, 59, 86, 0.3);
+}
+
+.chip-down:hover {
+  background: rgba(255, 59, 86, 0.15);
+  border-color: #ff3b56;
+}
+
+.chip-change {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.chip-up .chip-change { color: #00d084; }
+.chip-down .chip-change { color: #ff3b56; }
 </style>
