@@ -197,14 +197,15 @@ class IBKRMarketEngine:
         """Scans for momentum stocks using IBKR scanner or mock data"""
         if self.is_mock or not IB_INSYNC_AVAILABLE or not self.ib or not self.ib.isConnected():
             # Mock scanner results
+            # Mock results reflect "appears first" filter: price $1.50–$15, float 200K–20M, volume/RV qualified
             mock_results = [
-                {"symbol": "TSLA", "lastPrice": 218.50, "changePercent": 5.4, "volume": "45M", "rv": "2.4x", "freeFloat": "2.8B", "reason": "High Volatility", "trend": "up"},
-                {"symbol": "NVDA", "lastPrice": 118.20, "changePercent": 4.2, "volume": "38M", "rv": "1.8x", "freeFloat": "24B", "reason": "Sector Momentum", "trend": "up"},
-                {"symbol": "AMD", "lastPrice": 142.30, "changePercent": 3.8, "volume": "25M", "rv": "1.5x", "freeFloat": "1.6B", "reason": "Squeeze Potential", "trend": "up"},
-                {"symbol": "PLTR", "lastPrice": 28.50, "changePercent": 8.1, "volume": "55M", "rv": "4.2x", "freeFloat": "1.9B", "reason": "Unusual Volume", "trend": "up"},
-                {"symbol": "SMCI", "lastPrice": 850.20, "changePercent": 6.5, "volume": "12M", "rv": "3.1x", "freeFloat": "48M", "reason": "Breakout", "trend": "up"},
-                {"symbol": "GME", "lastPrice": 22.40, "changePercent": 12.3, "volume": "60M", "rv": "8.5x", "freeFloat": "305M", "reason": "Retail Surge", "trend": "up"},
-                {"symbol": "SNOW", "lastPrice": 130.10, "changePercent": -5.2, "volume": "15M", "rv": "1.2x", "freeFloat": "278M", "reason": "Dumping", "trend": "down"}
+                {"symbol": "MOXC", "lastPrice": 3.82, "changePercent": 45.2, "volume": "12.4M", "rv": "18.7x", "freeFloat": "4.2M", "reason": "Breakout", "trend": "up"},
+                {"symbol": "RILY", "lastPrice": 6.15, "changePercent": 22.8, "volume": "5.1M", "rv": "9.3x", "freeFloat": "8.6M", "reason": "Unusual Volume", "trend": "up"},
+                {"symbol": "BBAI", "lastPrice": 2.44, "changePercent": 18.5, "volume": "9.8M", "rv": "6.1x", "freeFloat": "12.1M", "reason": "Momentum", "trend": "up"},
+                {"symbol": "VMAR", "lastPrice": 1.78, "changePercent": 31.6, "volume": "3.2M", "rv": "14.2x", "freeFloat": "1.9M", "reason": "Squeeze", "trend": "up"},
+                {"symbol": "VERB", "lastPrice": 4.20, "changePercent": 15.3, "volume": "1.1M", "rv": "4.8x", "freeFloat": "6.3M", "reason": "High Volatility", "trend": "up"},
+                {"symbol": "IDEX", "lastPrice": 7.55, "changePercent": 12.7, "volume": "2.9M", "rv": "3.5x", "freeFloat": "18.4M", "reason": "Breakout", "trend": "up"},
+                {"symbol": "ILUS", "lastPrice": 2.09, "changePercent": -8.4, "volume": "900K", "rv": "3.2x", "freeFloat": "5.7M", "reason": "Fading", "trend": "down"},
             ]
             await self.broadcast_callback({"type": "SCANNER_RESULTS", "data": mock_results})
             return
@@ -250,6 +251,23 @@ class IBKRMarketEngine:
                 market_open = now_est.replace(hour=4, minute=0, second=0, microsecond=0)
             minutes_since_open = max(1.0, (now_est - market_open).total_seconds() / 60.0)
             
+            # Helper: fetch last 1-min candle volume for a contract
+            async def get_last_1m_vol(contract) -> Optional[float]:
+                try:
+                    bars = await self.ib.reqHistoricalDataAsync(
+                        contract, endDateTime='', durationStr='5 mins',
+                        barSizeSetting='1 min', whatToShow='TRADES',
+                        useRTH=False, formatDate=1
+                    )
+                    if bars and len(bars) >= 2:
+                        # bars[-1] is the live (in-progress) bar; bars[-2] is the last complete bar
+                        return bars[-2].volume
+                    elif bars:
+                        return bars[-1].volume
+                except Exception:
+                    pass
+                return None
+
             for i, item in enumerate(scan_data[:30]):
                 if len(results) >= 10:
                     break
@@ -261,6 +279,11 @@ class IBKRMarketEngine:
                 last_price = ticker.marketPrice()
                 if math.isnan(last_price) or last_price == 0:
                     last_price = None
+
+                # ── Filter 1: Price must be >= $1.50 and < $15.00 ──────────────────
+                if last_price is None or not (1.5 <= last_price < 15.0):
+                    self.ib.cancelMktData(contract)
+                    continue
                     
                 close_price = ticker.close
                 if math.isnan(close_price) or close_price == 0:
@@ -275,53 +298,69 @@ class IBKRMarketEngine:
                 vol = ticker.volume
                 if math.isnan(vol):
                     vol = None
-                    
-                # Vol/Min Filter (25k/min)
-                vol_per_min = (vol / minutes_since_open) if vol else 0
-                if vol_per_min < 25000:
-                    self.ib.cancelMktData(contract)
-                    continue
 
-                vol_str = "--"
-                if vol:
-                    if vol > 1000000:
-                        vol_str = f"{vol/1000000:.1f}M"
-                    elif vol > 1000:
-                        vol_str = f"{vol/1000:.1f}K"
-                    else:
-                        vol_str = str(int(vol))
-                        
-                # Calculate RV (Relative Volume)
+                # ── Filter 2: Volume > 800k  OR  RV > 3x ──────────────────────────
                 rv = None
                 av_vol = getattr(ticker, 'avVolume', None)
                 if vol and av_vol and not math.isnan(av_vol) and av_vol > 0:
-                    # In IB, avVolume and volume might both be in hundreds, or actual shares. 
-                    # Assuming they are in the same unit.
                     rv = vol / av_vol
-                
-                # Extract Free Float
+
+                vol_ok = (vol and vol > 800_000) or (rv and rv > 3.0)
+                if not vol_ok:
+                    self.ib.cancelMktData(contract)
+                    continue
+
+                # ── Filter 3: Free Float in [200k, 20M] ───────────────────────────
                 free_float = None
                 fr = getattr(ticker, 'fundamentalRatios', None)
                 if fr:
-                    # Depending on ib_insync version, fr might be a namedtuple or object
                     float_val = getattr(fr, 'FLOAT', None) or getattr(fr, 'Float', None)
                     if float_val:
-                        free_float = float_val
+                        try:
+                            free_float = float(float_val)
+                        except Exception:
+                            pass
+
+                # Fallback: use IB shortableShares as a rough float proxy
+                if free_float is None:
+                    ss = getattr(ticker, 'shortableShares', None)
+                    if ss and not math.isnan(ss) and ss > 0:
+                        free_float = ss
+
+                if free_float is not None and not (200_000 <= free_float <= 20_000_000):
+                    self.ib.cancelMktData(contract)
+                    continue
+
+                # ── Filter 4: Last 1-min candle volume > 10k ──────────────────────
+                last_1m_vol = await get_last_1m_vol(contract)
+                if last_1m_vol is not None and last_1m_vol <= 10_000:
+                    self.ib.cancelMktData(contract)
+                    continue
+
+                # ── Passed all filters – build result ─────────────────────────────
+                vol_str = "--"
+                if vol:
+                    if vol > 1_000_000:
+                        vol_str = f"{vol/1_000_000:.1f}M"
+                    elif vol > 1_000:
+                        vol_str = f"{vol/1_000:.1f}K"
+                    else:
+                        vol_str = str(int(vol))
                 
                 # Formatter helper
                 def format_large(num):
                     if not num: return "--"
                     try:
                         n = float(num)
-                        if n > 1000000: return f"{n/1000000:.1f}M"
-                        if n > 1000: return f"{n/1000:.1f}K"
+                        if n > 1_000_000: return f"{n/1_000_000:.1f}M"
+                        if n > 1_000: return f"{n/1_000:.1f}K"
                         return str(int(n))
                     except:
                         return "--"
                         
                 results.append({
                     "symbol": contract.symbol,
-                    "lastPrice": round(last_price, 2) if last_price else "--", 
+                    "lastPrice": round(last_price, 2),
                     "changePercent": round(change_pct, 2) if change_pct is not None else "--",
                     "volume": vol_str,
                     "rv": f"{rv:.1f}x" if rv else "--",
