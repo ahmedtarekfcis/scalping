@@ -1,17 +1,5 @@
 <template>
   <div class="mtf-panel glass-panel">
-    <!-- Header: Current Price instead of 'MTF CONFLUENCE' -->
-    <div class="panel-header">
-      <div class="header-title">
-        <span class="live-dot"></span>
-        <div class="header-price-wrap">
-          <span class="header-price mono font-bold">{{ store.lastPrice ? `$${Number(store.lastPrice).toFixed(2)}` : '$--' }}</span>
-          <span class="ticker-badge mono">{{ store.currentTicker }}</span>
-        </div>
-      </div>
-      <span class="header-sub mono">LIVE PRICE</span>
-    </div>
-
     <div class="mtf-content mono">
       <!-- Section 1: MTF Floors & Walls Table -->
       <div class="mtf-section">

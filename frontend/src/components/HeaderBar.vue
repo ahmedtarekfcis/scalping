@@ -249,8 +249,7 @@ function toggleVoice() {
 
     <!-- Right: Connection Badge & Quick Settings -->
     <div class="status-section">
-      <router-link to="/" class="nav-link mono" active-class="active-nav">DASHBOARD</router-link>
-      <router-link to="/scanner" class="nav-link mono" active-class="active-nav">SCANNER</router-link>
+      <div class="api-status-dot" :class="store.wsConnected ? 'connected' : 'disconnected'" :title="store.wsConnected ? 'API Connected' : 'API Disconnected'"></div>
 
       <button @click="toggleVoice" class="btn-config" :title="voiceEnabled ? 'Mute Voice Alerts' : 'Unmute Voice Alerts'">
         {{ voiceEnabled ? '🔊' : '🔇' }}
@@ -383,26 +382,26 @@ function toggleVoice() {
   color: var(--text-primary);
 }
 
-.nav-link {
-  color: var(--text-muted);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 800;
-  padding: 6px 12px;
-  border-radius: 6px;
-  transition: all 0.2s ease;
-  letter-spacing: 0.5px;
+.api-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 12px;
 }
 
-.nav-link:hover {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.05);
+.api-status-dot.connected {
+  background-color: var(--green-bid);
+  box-shadow: 0 0 8px var(--green-bid-glow, rgba(0, 208, 132, 0.5));
 }
 
-.active-nav {
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.3);
+.api-status-dot.disconnected {
+  background-color: var(--red-ask);
+  animation: flash-red 0.8s infinite alternate;
+}
+
+@keyframes flash-red {
+  0% { transform: scale(1); opacity: 1; box-shadow: 0 0 5px var(--red-ask); }
+  100% { transform: scale(1.3); opacity: 0.5; box-shadow: 0 0 15px var(--red-ask); }
 }
 
 .text-green { color: var(--green-bid); }

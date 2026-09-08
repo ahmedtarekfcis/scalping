@@ -123,6 +123,14 @@ class IBKRMarketEngine:
             if self.ib:
                 self.ib.pendingTickersEvent -= self._on_tick_by_tick
             
+            if getattr(self, 'live_bars_1m', None):
+                self.live_bars_1m.updateEvent -= self._on_1m_bar_update
+                try:
+                    self.ib.cancelHistoricalData(self.live_bars_1m)
+                except Exception:
+                    pass
+                self.live_bars_1m = None
+
             if self.hist_fetch_task and not self.hist_fetch_task.done():
                 self.hist_fetch_task.cancel()
         except Exception:
@@ -419,7 +427,7 @@ class IBKRMarketEngine:
 
     def _on_1m_bar_update(self, bars, hasNewBar: bool):
         """Native IBKR live update event for 1m bars"""
-        if self.quant_engine.symbol != self.active_symbol:
+        if getattr(bars, 'contract', None) and bars.contract.symbol != self.active_symbol:
             return
             
         def convert(bars_list):

@@ -110,8 +110,8 @@ export const useMarketStore = defineStore('market', {
       }
 
       if (sp) {
-        // Strictly enforce criteria as the master gate
-        if (!sp.meets_bullish_criteria && !sp.meets_bearish_criteria) {
+        // Strictly enforce ALL bullish criteria (all green/ABOVE)
+        if (!sp.meets_bullish_criteria) {
           return {
             ...sp,
             direction: 'WAITING_10S_UPTREND',
@@ -119,8 +119,8 @@ export const useMarketStore = defineStore('market', {
           };
         }
 
-        // If actively surging or dumping, always pass through
-        if (sp.direction === 'SURGING_UP' || sp.direction === 'POTENTIAL_SQUEEZE' || sp.direction === 'MOMENTUM_SURGE' || sp.direction === 'DUMPING_DOWN' || sp.direction === 'POTENTIAL_FLUSH') {
+        // If actively surging, always pass through
+        if (sp.direction === 'SURGING_UP' || sp.direction === 'POTENTIAL_SQUEEZE' || sp.direction === 'MOMENTUM_SURGE') {
           return sp;
         }
         

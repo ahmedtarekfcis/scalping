@@ -129,7 +129,6 @@
           </div>
         </div>
       </div>
-      <span class="col-side">SIDE</span>
     </div>
 
     <!-- Tape Scrolling Stream -->
@@ -176,21 +175,9 @@
             
             <span class="size-val-container">
               {{ formatNum(tick.size) }}
-              <span v-if="tick.orderCount && tick.orderCount > 1" class="agg-count-tag" title="Aggregated consecutive trades at same price & ms">
-                {{ tick.orderCount }}x
+              <span class="agg-count-tag" :style="{ opacity: (tick.orderCount && tick.orderCount > 1) ? 1 : 0 }" title="Aggregated consecutive trades at same price & ms">
+                {{ tick.orderCount || 1 }}x
               </span>
-            </span>
-          </span>
-
-          <!-- Side Badge: Always reflects ASK (BUY) in Green or BID (SELL) in Red -->
-          <span class="col-side">
-            <span 
-              class="side-tag"
-              :class="[
-                tick.side === 'BUY' ? 'side-ask' : (tick.side === 'SELL' ? 'side-bid' : 'side-mid')
-              ]"
-            >
-              {{ tick.side === 'BUY' ? 'ASK' : (tick.side === 'SELL' ? 'BID' : 'MID') }}
             </span>
           </span>
         </div>
@@ -797,8 +784,8 @@ function formatNum(num) {
 .tape-table-header {
   position: relative;
   display: grid;
-  grid-template-columns: 88px 1fr 1.2fr 64px;
-  padding: 8px 14px;
+  grid-template-columns: 88px 1fr 1.2fr;
+  padding: 8px 7px 8px 14px;
   height: 36px;
   box-sizing: border-box;
   font-size: 12px;
@@ -824,9 +811,9 @@ function formatNum(num) {
 
 .tape-item {
   display: grid;
-  grid-template-columns: 88px 1fr 1.2fr 64px;
+  grid-template-columns: 88px 1fr 1.2fr;
   align-items: center;
-  padding: 4px 14px;
+  padding: 4px 7px 4px 14px;
   height: 32px;
   box-sizing: border-box;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
@@ -853,7 +840,6 @@ function formatNum(num) {
   text-align: right;
   font-size: 15px;
   font-weight: 800;
-  padding-right: 8px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -919,8 +905,11 @@ function formatNum(num) {
   background: rgba(56, 189, 248, 0.22);
   color: #38bdf8;
   padding: 0 4px;
-  border-radius: 2px;
+  border-radius: 4px;
   border: 1px solid rgba(56, 189, 248, 0.35);
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
 }
 
 /* Color Coding */
