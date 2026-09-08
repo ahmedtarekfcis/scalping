@@ -26,14 +26,13 @@ class IBKRMarketEngine:
         self.broadcast_callback = broadcast_callback
         self.config = IBKRConnectionConfig()
         self.ib: Optional[IB] = None
+        self.scanner_ib: Optional[IB] = None
         self.is_connected = False
-        self.is_mock = False
         self.active_symbol: Optional[str] = None
         self.last_error = None
         
         # State tracking
         self.current_book: Dict[str, OrderBook] = {}
-        self.mock_task: Optional[asyncio.Task] = None
         self.hist_fetch_task: Optional[asyncio.Task] = None
         self.depth_ticker = None
         self.mkt_ticker = None
@@ -47,13 +46,12 @@ class IBKRMarketEngine:
 
     async def initialize(self):
         """Initial start: ready and idle until symbol subscription"""
-        if not self.config.useMock and IB_INSYNC_AVAILABLE:
+        if IB_INSYNC_AVAILABLE:
             await self.connect_ibkr(self.config)
 
     def get_status(self) -> ConnectionStatus:
         return ConnectionStatus(
-            connected=self.is_connected or self.is_mock,
-            isMock=self.is_mock,
+            connected=self.is_connected,
             activeSymbol=self.active_symbol,
             host=self.config.host,
             port=self.config.port,
@@ -65,21 +63,15 @@ class IBKRMarketEngine:
         self.config = config
         self.last_error = None
 
-        # Stop mock if running
-        if self.mock_task and not self.mock_task.done():
-            self.mock_task.cancel()
-            self.mock_task = None
-
-        if config.useMock or not IB_INSYNC_AVAILABLE:
-            self.is_mock = True
+        if not IB_INSYNC_AVAILABLE:
             self.is_connected = False
-            if self.active_symbol:
-                await self.start_mock_engine(self.active_symbol)
-            return {"status": "success", "mode": "mock", "message": "Simulator ready"}
+            return {"status": "error", "message": "IB_INSYNC is not available"}
 
         try:
             if self.ib and self.ib.isConnected():
                 self.ib.disconnect()
+            if getattr(self, 'scanner_ib', None) and self.scanner_ib.isConnected():
+                self.scanner_ib.disconnect()
 
             self.ib = IB()
             # Asynchronous connection to TWS
@@ -89,19 +81,24 @@ class IBKRMarketEngine:
                 clientId=config.clientId,
                 timeout=5
             )
+            
+            # Persistent scanner connection to avoid IB Gateway spam
+            self.scanner_ib = IB()
+            await self.scanner_ib.connectAsync(
+                host=config.host,
+                port=config.port,
+                clientId=config.clientId + 10,
+                timeout=5
+            )
+            
             self.is_connected = True
-            self.is_mock = False
             if self.active_symbol:
                 await self.subscribe_symbol(self.active_symbol)
             return {"status": "success", "mode": "live", "message": f"Connected to IBKR at {config.host}:{config.port}"}
         except Exception as e:
             self.last_error = str(e)
             self.is_connected = False
-            self.is_mock = True
-            # Fallback to mock so UI is alive
-            if self.active_symbol:
-                await self.start_mock_engine(self.active_symbol)
-            return {"status": "fallback_to_mock", "mode": "mock", "error": str(e)}
+            return {"status": "error", "mode": "none", "error": str(e)}
 
     async def subscribe_symbol(self, symbol: str):
         symbol = symbol.upper().strip()
@@ -110,12 +107,7 @@ class IBKRMarketEngine:
         # Reset Intelligence Engine
         self.quant_engine.reset(symbol)
 
-        if self.is_mock:
-            await self.start_mock_engine(symbol)
-            return
-
         if not self.ib or not self.ib.isConnected():
-            await self.start_mock_engine(symbol)
             return
 
         # Cancel previous subscriptions if any
@@ -194,32 +186,36 @@ class IBKRMarketEngine:
         self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
 
     async def scan_market(self):
-        """Scans for momentum stocks using IBKR scanner or mock data"""
-        if self.is_mock or not IB_INSYNC_AVAILABLE or not self.ib or not self.ib.isConnected():
-            # Mock scanner results
-            # Mock results reflect "appears first" filter: price $1.50–$15, float 200K–20M, volume/RV qualified
-            mock_results = [
-                {"symbol": "MOXC", "lastPrice": 3.82, "changePercent": 45.2, "volume": "12.4M", "rv": "18.7x", "freeFloat": "4.2M", "reason": "Breakout", "trend": "up"},
-                {"symbol": "RILY", "lastPrice": 6.15, "changePercent": 22.8, "volume": "5.1M", "rv": "9.3x", "freeFloat": "8.6M", "reason": "Unusual Volume", "trend": "up"},
-                {"symbol": "BBAI", "lastPrice": 2.44, "changePercent": 18.5, "volume": "9.8M", "rv": "6.1x", "freeFloat": "12.1M", "reason": "Momentum", "trend": "up"},
-                {"symbol": "VMAR", "lastPrice": 1.78, "changePercent": 31.6, "volume": "3.2M", "rv": "14.2x", "freeFloat": "1.9M", "reason": "Squeeze", "trend": "up"},
-                {"symbol": "VERB", "lastPrice": 4.20, "changePercent": 15.3, "volume": "1.1M", "rv": "4.8x", "freeFloat": "6.3M", "reason": "High Volatility", "trend": "up"},
-                {"symbol": "IDEX", "lastPrice": 7.55, "changePercent": 12.7, "volume": "2.9M", "rv": "3.5x", "freeFloat": "18.4M", "reason": "Breakout", "trend": "up"},
-                {"symbol": "ILUS", "lastPrice": 2.09, "changePercent": -8.4, "volume": "900K", "rv": "3.2x", "freeFloat": "5.7M", "reason": "Fading", "trend": "down"},
-            ]
-            await self.broadcast_callback({"type": "SCANNER_RESULTS", "data": mock_results})
+        """Scans for momentum stocks using a dedicated IBKR connection to avoid affecting L2 data"""
+        if not IB_INSYNC_AVAILABLE:
             return
 
-        try:
-            current_time = time.time()
-            if not getattr(self, '_last_scan_time', None):
-                self._last_scan_time = 0
-                
-            # Rate limit live IBKR scans to once every 10 seconds to prevent pacing violations and disconnects
-            if (current_time - self._last_scan_time) < 10:
+        current_time = time.time()
+        if not getattr(self, '_last_scan_time', None):
+            self._last_scan_time = 0
+            
+        # Rate limit live IBKR scans to once every 15 seconds to prevent pacing violations
+        if (current_time - self._last_scan_time) < 15:
+            return
+            
+        self._last_scan_time = current_time
+
+        if not getattr(self, 'scanner_ib', None) or not self.scanner_ib.isConnected():
+            try:
+                self.scanner_ib = IB()
+                await self.scanner_ib.connectAsync(
+                    host=self.config.host,
+                    port=self.config.port,
+                    clientId=self.config.clientId + 10,
+                    timeout=5
+                )
+            except Exception as e:
+                print(f"Failed to reconnect scanner: {e}")
                 return
-                
-            self._last_scan_time = current_time
+
+        scanner_ib = self.scanner_ib
+        try:
+            # Use the persistent dedicated connection
             
             sub = ScannerSubscription(
                 instrument='STK',
@@ -227,18 +223,17 @@ class IBKRMarketEngine:
                 scanCode='HOT_BY_VOLUME',
                 abovePrice=1.5
             )
-            scan_data = await self.ib.reqScannerDataAsync(sub)
+            scan_data = await scanner_ib.reqScannerDataAsync(sub)
             
             results = []
             # Grab top 30 to give us enough buffer for custom python filtering
             contracts = [item.contractDetails.contract for item in scan_data[:30]]
             
             # Qualify contracts first (essential for reqMktData)
-            await self.ib.qualifyContractsAsync(*contracts)
+            await scanner_ib.qualifyContractsAsync(*contracts)
             
             # Request streaming market data with 165 (Misc Stats for Avg Volume).
-            # Note: Removed 258 (Fundamental Ratios) because it causes IBKR to reject the entire data feed if the user lacks the Reuters Fundamentals subscription.
-            tickers = [self.ib.reqMktData(c, '165,233', False, False) for c in contracts]
+            tickers = [scanner_ib.reqMktData(c, '165,233', False, False) for c in contracts]
             
             # Wait up to 2.5s for data to populate
             await asyncio.sleep(2.5)
@@ -251,16 +246,15 @@ class IBKRMarketEngine:
                 market_open = now_est.replace(hour=4, minute=0, second=0, microsecond=0)
             minutes_since_open = max(1.0, (now_est - market_open).total_seconds() / 60.0)
             
-            # Helper: fetch last 1-min candle volume for a contract
+            # Helper: fetch last 1-min candle volume for a contract using dedicated scanner connection
             async def get_last_1m_vol(contract) -> Optional[float]:
                 try:
-                    bars = await self.ib.reqHistoricalDataAsync(
+                    bars = await scanner_ib.reqHistoricalDataAsync(
                         contract, endDateTime='', durationStr='5 mins',
                         barSizeSetting='1 min', whatToShow='TRADES',
                         useRTH=False, formatDate=1
                     )
                     if bars and len(bars) >= 2:
-                        # bars[-1] is the live (in-progress) bar; bars[-2] is the last complete bar
                         return bars[-2].volume
                     elif bars:
                         return bars[-1].volume
@@ -275,14 +269,13 @@ class IBKRMarketEngine:
                 contract = item.contractDetails.contract
                 ticker = tickers[i]
                 
-                # Use ib_insync's marketPrice() helper which handles nan checks
                 last_price = ticker.marketPrice()
                 if math.isnan(last_price) or last_price == 0:
                     last_price = None
 
-                # ── Filter 1: Price must be >= $1.50 and < $15.00 ──────────────────
+                # ── Filter 1: Price must be >= $1.50 and < $15.00
                 if last_price is None or not (1.5 <= last_price < 15.0):
-                    self.ib.cancelMktData(contract)
+                    scanner_ib.cancelMktData(contract)
                     continue
                     
                 close_price = ticker.close
@@ -299,7 +292,7 @@ class IBKRMarketEngine:
                 if math.isnan(vol):
                     vol = None
 
-                # ── Filter 2: Volume > 800k  OR  RV > 3x ──────────────────────────
+                # ── Filter 2: Volume > 800k  OR  RV > 3x
                 rv = None
                 av_vol = getattr(ticker, 'avVolume', None)
                 if vol and av_vol and not math.isnan(av_vol) and av_vol > 0:
@@ -307,10 +300,10 @@ class IBKRMarketEngine:
 
                 vol_ok = (vol and vol > 800_000) or (rv and rv > 3.0)
                 if not vol_ok:
-                    self.ib.cancelMktData(contract)
+                    scanner_ib.cancelMktData(contract)
                     continue
 
-                # ── Filter 3: Free Float in [200k, 20M] ───────────────────────────
+                # ── Filter 3: Free Float in [200k, 20M]
                 free_float = None
                 fr = getattr(ticker, 'fundamentalRatios', None)
                 if fr:
@@ -321,23 +314,22 @@ class IBKRMarketEngine:
                         except Exception:
                             pass
 
-                # Fallback: use IB shortableShares as a rough float proxy
                 if free_float is None:
                     ss = getattr(ticker, 'shortableShares', None)
                     if ss and not math.isnan(ss) and ss > 0:
                         free_float = ss
 
                 if free_float is not None and not (200_000 <= free_float <= 20_000_000):
-                    self.ib.cancelMktData(contract)
+                    scanner_ib.cancelMktData(contract)
                     continue
 
-                # ── Filter 4: Last 1-min candle volume > 10k ──────────────────────
+                # ── Filter 4: Last 1-min candle volume > 10k
                 last_1m_vol = await get_last_1m_vol(contract)
                 if last_1m_vol is not None and last_1m_vol <= 10_000:
-                    self.ib.cancelMktData(contract)
+                    scanner_ib.cancelMktData(contract)
                     continue
 
-                # ── Passed all filters – build result ─────────────────────────────
+                # ── Passed all filters – build result
                 vol_str = "--"
                 if vol:
                     if vol > 1_000_000:
@@ -347,7 +339,6 @@ class IBKRMarketEngine:
                     else:
                         vol_str = str(int(vol))
                 
-                # Formatter helper
                 def format_large(num):
                     if not num: return "--"
                     try:
@@ -369,13 +360,11 @@ class IBKRMarketEngine:
                     "trend": "up" if (change_pct and change_pct > 0) else "down"
                 })
                 
-                # Clean up subscriptions
-                self.ib.cancelMktData(contract)
+                scanner_ib.cancelMktData(contract)
                 
-            # Clean up any leftover subscriptions if we exited early
             for i in range(len(results), len(tickers)):
                 try:
-                    self.ib.cancelMktData(scan_data[i].contractDetails.contract)
+                    scanner_ib.cancelMktData(scan_data[i].contractDetails.contract)
                 except:
                     pass
                 
@@ -584,137 +573,4 @@ class IBKRMarketEngine:
                 )
                 asyncio.create_task(self._emit_or_aggregate_tape_tick(tick))
 
-    # -------------------------------------------------------------
-    # HIGH-SPEED REALISTIC LEVEL 2 & TIME/SALES SIMULATOR (Mock Mode)
-    # -------------------------------------------------------------
-    async def start_mock_engine(self, symbol: str):
-        if self.mock_task and not self.mock_task.done():
-            self.mock_task.cancel()
-        
-        self.mock_task = asyncio.create_task(self._run_mock_loop(symbol))
 
-    async def _run_mock_loop(self, symbol: str):
-        """Generates realistic micro-movements, spoofing, order queue updates and tape prints"""
-        # Base prices per popular symbols
-        base_prices = {
-            "TSLA": 218.50,
-            "NVDA": 118.20,
-            "AAPL": 224.80,
-            "SPY": 560.10,
-            "QQQ": 478.40,
-            "AMD": 142.30,
-            "AMZN": 182.90,
-            "MSFT": 415.60
-        }
-        mid_price = base_prices.get(symbol.upper(), 150.00)
-        open_price = mid_price * 0.992
-        high_price = mid_price * 1.015
-        low_price = mid_price * 0.985
-        total_volume = random.randint(12_000_000, 45_000_000)
-
-        # Generate initial 20 L2 levels
-        spread = 0.01
-
-        while True:
-            try:
-                # Random micro-drift in mid price
-                drift = random.choice([-0.02, -0.01, -0.01, 0.0, 0.0, 0.01, 0.01, 0.02])
-                mid_price = max(1.0, round(mid_price + drift, 2))
-                high_price = max(high_price, mid_price)
-                low_price = min(low_price, mid_price)
-
-                best_bid = round(mid_price - spread / 2, 2)
-                best_ask = round(best_bid + spread, 2)
-
-                bids: List[DepthLevel] = []
-                asks: List[DepthLevel] = []
-
-                # Build up to 100 depth levels with realistic tiered order sizes
-                for i in range(100):
-                    bid_p = round(best_bid - (i * 0.01), 2)
-                    ask_p = round(best_ask + (i * 0.01), 2)
-
-                    # Dynamic sizes with occasional large "institutional wall"
-                    bid_sz = random.randint(2, 60) * 100
-                    if i in [3, 7, 12, 25, 48, 72] and random.random() > 0.4:
-                        bid_sz = random.randint(120, 850) * 100  # Big bid wall
-
-                    ask_sz = random.randint(2, 60) * 100
-                    if i in [2, 6, 11, 24, 45, 68] and random.random() > 0.4:
-                        ask_sz = random.randint(120, 850) * 100  # Big ask wall
-
-                    bids.append(DepthLevel(
-                        price=bid_p,
-                        size=bid_sz,
-                        marketMaker=random.choice(self.mmids),
-                        ordersCount=max(1, int(bid_sz / random.randint(100, 300)))
-                    ))
-                    asks.append(DepthLevel(
-                        price=ask_p,
-                        size=ask_sz,
-                        marketMaker=random.choice(self.mmids),
-                        ordersCount=max(1, int(ask_sz / random.randint(100, 300)))
-                    ))
-
-                change = round(mid_price - open_price, 2)
-                change_pct = round((change / open_price) * 100, 2)
-
-                order_book = OrderBook(
-                    symbol=symbol,
-                    timestamp=time.time(),
-                    bids=bids,
-                    asks=asks,
-                    lastPrice=mid_price,
-                    change=change,
-                    changePercent=change_pct,
-                    volume=total_volume,
-                    high=round(high_price, 2),
-                    low=round(low_price, 2),
-                    open=round(open_price, 2)
-                )
-
-                self.current_book[symbol] = order_book
-
-                # Broadcast L2 Book Snapshot / Delta
-                await self.broadcast_callback({
-                    "type": "L2_UPDATE",
-                    "data": order_book.dict()
-                })
-
-                # Generate 1 to 4 fast tape ticks per cycle
-                num_ticks = random.choices([1, 2, 3, 4], weights=[40, 30, 20, 10])[0]
-                cycle_time_str = datetime.datetime.now().strftime("%M:%S")
-                for _ in range(num_ticks):
-                    side = random.choices(["BUY", "SELL", "MID"], weights=[48, 46, 6])[0]
-                    trade_price = best_ask if side == "BUY" else (best_bid if side == "SELL" else mid_price)
-                    # Momentum small-cap trade sizes (all >= 100)
-                    trade_size = random.choice([100, 100, 200, 300, 500, 800, 1200, 2200, 3500, 5000])
-                    is_block = trade_size >= 2000
-                    total_volume += trade_size
-
-                    # Occasionally share identical timestamp to trigger aggregation simulation
-                    t_stamp = cycle_time_str if random.random() > 0.4 else datetime.datetime.now().strftime("%M:%S")
-
-                    tick = TapeTick(
-                        symbol=symbol,
-                        time=t_stamp,
-                        timestamp=time.time(),
-                        price=trade_price,
-                        size=trade_size,
-                        side=side,
-                        exchange=random.choice(self.mmids),
-                        condition="@" if not is_block else "BLK",
-                        isBlockTrade=is_block,
-                        orderCount=1
-                    )
-
-                    await self._emit_or_aggregate_tape_tick(tick)
-
-                # Micro-interval between 60ms to 180ms for ultra responsive momentum feel
-                await asyncio.sleep(random.uniform(0.06, 0.16))
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"Error in mock loop: {e}")
-                await asyncio.sleep(1)

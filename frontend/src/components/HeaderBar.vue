@@ -28,14 +28,12 @@ function handleSymbolSubmit() {
 
 const statusClass = computed(() => {
   if (!store.wsConnected) return 'status-disconnected';
-  if (store.status.isMock) return 'status-mock';
   return 'status-live';
 });
 
 const statusText = computed(() => {
   if (!store.wsConnected) return 'DISCONNECTED';
-  if (store.status.isMock) return 'MOCK SIMULATOR';
-  return `IBKR LIVE (${store.status.port})`;
+  return `IBKR LIVE (${store.status?.port || 'Connected'})`;
 });
 
 const surgeDirection = computed(() => store.intelligence?.surge_prediction?.direction || 'CONSOLIDATING');
@@ -242,21 +240,11 @@ function toggleVoice() {
 
     <!-- Right: Connection Badge & Quick Settings -->
     <div class="status-section">
+      <router-link to="/" class="nav-link mono" active-class="active-nav">DASHBOARD</router-link>
+      <router-link to="/scanner" class="nav-link mono" active-class="active-nav">SCANNER</router-link>
+
       <button @click="toggleVoice" class="btn-config" :title="voiceEnabled ? 'Mute Voice Alerts' : 'Unmute Voice Alerts'">
         {{ voiceEnabled ? '🔊' : '🔇' }}
-      </button>
-      <div class="connection-pill" :class="statusClass" @click="$emit('open-settings')">
-        <div class="pulse-dot"></div>
-        <span class="status-text mono">{{ statusText }}</span>
-      </div>
-      <button @click="$emit('open-settings')" class="btn-config" title="Connection Settings">
-        ⚙ Config
-      </button>
-      <button v-if="currentPage === 'dashboard'" @click="$emit('go-scanner')" class="btn-config text-glow-orange" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);">
-        🔥 SCANNER
-      </button>
-      <button v-else @click="$emit('go-dashboard')" class="btn-config text-glow-blue" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
-        ⬅ DASHBOARD
       </button>
     </div>
   </div>
@@ -328,15 +316,7 @@ function toggleVoice() {
   box-shadow: 0 0 8px var(--green-bid-glow);
 }
 
-.status-mock {
-  background: rgba(6, 182, 212, 0.15);
-  color: var(--accent-cyan);
-  border: 1px solid rgba(6, 182, 212, 0.3);
-}
-.status-mock .pulse-dot {
-  background: var(--accent-cyan);
-  box-shadow: 0 0 8px rgba(6, 182, 212, 0.4);
-}
+
 
 .status-disconnected {
   background: rgba(255, 59, 86, 0.15);
@@ -374,6 +354,28 @@ function toggleVoice() {
 .btn-config:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
+}
+
+.nav-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  letter-spacing: 0.5px;
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.active-nav {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.3);
 }
 
 .text-green { color: var(--green-bid); }

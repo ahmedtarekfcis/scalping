@@ -7,30 +7,7 @@
       </div>
 
       <div class="modal-body">
-        <!-- Mode Switcher -->
-        <div class="form-group">
-          <label>Data Provider Engine</label>
-          <div class="mode-selector">
-            <button 
-              type="button"
-              class="btn-mode" 
-              :class="{ active: form.useMock }" 
-              @click="form.useMock = true"
-            >
-              High-Speed Simulator (No TWS required)
-            </button>
-            <button 
-              type="button"
-              class="btn-mode" 
-              :class="{ active: !form.useMock }" 
-              @click="form.useMock = false"
-            >
-              Interactive Brokers (TWS / Gateway)
-            </button>
-          </div>
-        </div>
-
-        <div v-if="!form.useMock" class="ibkr-fields">
+        <div class="ibkr-fields">
           <div class="form-row">
             <div class="form-group flex-1">
               <label>Host</label>
@@ -84,8 +61,7 @@ const store = useMarketStore();
 const form = reactive({
   host: store.status.host || '127.0.0.1',
   port: store.status.port || 4002,
-  clientId: store.status.clientId || 1,
-  useMock: store.status.isMock ?? false
+  clientId: store.status.clientId || 1
 });
 
 watch(() => props.isOpen, (val) => {
@@ -93,7 +69,6 @@ watch(() => props.isOpen, (val) => {
     form.host = store.status.host || '127.0.0.1';
     form.port = store.status.port || 4002;
     form.clientId = store.status.clientId || 1;
-    form.useMock = store.status.isMock ?? false;
   }
 });
 
@@ -101,8 +76,7 @@ function saveAndConnect() {
   store.connectIBKR({
     host: form.host,
     port: form.port,
-    clientId: form.clientId,
-    useMock: form.useMock
+    clientId: form.clientId
   });
   emit('close');
 }

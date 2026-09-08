@@ -6,7 +6,6 @@ export const useMarketStore = defineStore('market', {
     isLoading: false,
     status: {
       connected: false,
-      isMock: true,
       activeSymbol: null,
       host: '127.0.0.1',
       port: 4002,
@@ -68,7 +67,11 @@ export const useMarketStore = defineStore('market', {
     // WebSocket
     ws: null,
     wsConnected: false,
+    wsError: false,          // True only after grace period expires without reconnect
     wsReconnectTimeout: null,
+    wsErrorTimeout: null,    // Grace period timer before showing error overlay
+    wsReconnectDelay: 1000,  // Start at 1s, backoff up to 15s
+    wsReconnectAttempts: 0,
     
     // UI Settings
     visibleLevels: 100, // Show up to 100 rows all the time
@@ -150,21 +153,26 @@ export const useMarketStore = defineStore('market', {
   actions: {
     initWebSocket() {
       if (this.ws) {
-        try {
-          this.ws.close();
-        } catch (e) {}
+        try { this.ws.close(); } catch (e) {}
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // Connect to FastAPI server running on port 8000
       const wsUrl = `${protocol}//${window.location.hostname}:8000/ws/market-data`;
-
       console.log('Connecting to WebSocket:', wsUrl);
+
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
         console.log('WebSocket Connected!');
         this.wsConnected = true;
+        this.wsError = false;
+        this.wsReconnectAttempts = 0;
+        this.wsReconnectDelay = 1000;
+        // Cancel any pending error overlay timer
+        if (this.wsErrorTimeout) {
+          clearTimeout(this.wsErrorTimeout);
+          this.wsErrorTimeout = null;
+        }
       };
 
       this.ws.onmessage = (event) => {
@@ -176,13 +184,29 @@ export const useMarketStore = defineStore('market', {
         }
       };
 
-      this.ws.onclose = () => {
-        console.warn('WebSocket Closed. Reconnecting in 2s...');
+      this.ws.onclose = (event) => {
+        console.warn(`WebSocket Closed (code: ${event.code}). Reconnecting in ${this.wsReconnectDelay}ms...`);
         this.wsConnected = false;
+        this.wsReconnectAttempts++;
+
+        // Only show the error overlay after a 4-second grace period
+        // This prevents flicker during normal brief reconnects
+        if (!this.wsErrorTimeout) {
+          this.wsErrorTimeout = setTimeout(() => {
+            if (!this.wsConnected) {
+              this.wsError = true;
+            }
+            this.wsErrorTimeout = null;
+          }, 4000);
+        }
+
         clearTimeout(this.wsReconnectTimeout);
         this.wsReconnectTimeout = setTimeout(() => {
           this.initWebSocket();
-        }, 2000);
+        }, this.wsReconnectDelay);
+
+        // Exponential backoff: 1s -> 2s -> 4s -> 8s -> 15s max
+        this.wsReconnectDelay = Math.min(15000, this.wsReconnectDelay * 2);
       };
 
       this.ws.onerror = (err) => {

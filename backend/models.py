@@ -38,11 +38,9 @@ class IBKRConnectionConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 4002  # 7497: TWS Paper, 7496: TWS Live, 4002: Gateway Paper, 4001: Gateway Live
     clientId: int = 1
-    useMock: bool = False
 
 class ConnectionStatus(BaseModel):
     connected: bool
-    isMock: bool
     activeSymbol: Optional[str] = None
     host: str
     port: int

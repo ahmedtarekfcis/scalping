@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models import IBKRConnectionConfig, ConnectionStatus
 from ib_client import IBKRMarketEngine
 
-app = FastAPI(title="IBKR Level 2 Market Depth Server", version="1.0.0")
+app = FastAPI(title="TradeEdge.ai", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,6 +49,19 @@ engine = IBKRMarketEngine(broadcast_callback=manager.broadcast)
 @app.on_event("startup")
 async def startup_event():
     await engine.initialize()
+    
+    # Continuous scanner loop to run in background independently of websocket
+    async def continuous_scanner():
+        # Small initial delay to let IB connection settle
+        await asyncio.sleep(5)
+        while True:
+            try:
+                await engine.scan_market()
+            except Exception as e:
+                print(f"Error in continuous scanner: {e}")
+            await asyncio.sleep(15)
+            
+    asyncio.create_task(continuous_scanner())
 
 
 @app.get("/api/status", response_model=ConnectionStatus)
@@ -80,6 +93,18 @@ async def subscribe_symbol(symbol: str):
 @app.websocket("/ws/market-data")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+
+    async def keepalive():
+        """Send a ping every 25 seconds to prevent proxy/idle timeouts."""
+        while True:
+            await asyncio.sleep(25)
+            try:
+                await websocket.send_text('{"type":"PING"}')
+            except Exception:
+                break
+
+    ping_task = asyncio.create_task(keepalive())
+
     try:
         # Send initial status & current book snapshot on connect
         await websocket.send_text(json.dumps({
@@ -94,6 +119,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
         while True:
             raw_data = await websocket.receive_text()
+            # Skip keepalive pongs from client
+            if raw_data.strip() in ('', '{"type":"PONG"}'):
+                continue
             try:
                 msg = json.loads(raw_data)
                 action = msg.get("action")
@@ -123,11 +151,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "PING":
                     await websocket.send_text(json.dumps({"type": "PONG"}))
             except Exception as e:
-                print(f"Error handling WS message: {e}")
+                # Log but DO NOT disconnect — keep the session alive
+                print(f"Error handling WS message (non-fatal): {e}")
 
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        pass
     except Exception as e:
+        print(f"WebSocket session ended unexpectedly: {e}")
+    finally:
+        ping_task.cancel()
         manager.disconnect(websocket)
 
 

@@ -18,7 +18,7 @@
         <div class="momentum-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <h3 class="font-bold" style="color: var(--text-primary);">MTF</h3>
           <button 
-            @click="store.refetchMtf()" 
+            @click="handleMtfRefresh" 
             class="btn-refresh-criteria" 
             title="Refetch S&R Levels"
           >
@@ -71,7 +71,7 @@
         <div class="momentum-header" style="display: flex; justify-content: space-between; align-items: center;">
           <span class="momentum-title">critrias</span>
           <button 
-            @click="store.refetchCriteria()" 
+            @click="handleCriteriaRefresh" 
             class="btn-refresh-criteria" 
             title="Refetch Moving Averages"
           >
@@ -79,7 +79,7 @@
           </button>
         </div>
 
-        <div class="metric-grid" :class="{ 'flash-update': flashCriteria }">
+        <div class="metric-grid" :class="{ 'flash-white': flashCriteria }">
           <div 
             v-for="item in momentumMetrics" 
             :key="item.label"
@@ -146,6 +146,18 @@ watch(() => store.intelligence?.last_mtf_update_time, (newVal, oldVal) => {
     }, 800);
   }
 });
+
+function handleMtfRefresh() {
+  flashMtf.value = true;
+  setTimeout(() => { flashMtf.value = false; }, 800);
+  store.refetchMtf();
+}
+
+function handleCriteriaRefresh() {
+  flashCriteria.value = true;
+  setTimeout(() => { flashCriteria.value = false; }, 800);
+  store.refetchCriteria();
+}
 
 // 1. MTF Frame Rows
 const frameRows = computed(() => {
@@ -569,21 +581,30 @@ const momentumMetrics = computed(() => {
 }
 
 .btn-refresh-criteria {
-  background: var(--bg-tertiary);
+  background: linear-gradient(180deg, var(--bg-tertiary) 0%, rgba(255, 255, 255, 0.05) 100%);
   border: 1px solid var(--border-color);
-  color: var(--text-secondary);
-  padding: 4px 10px;
-  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 6px 14px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.1);
+  letter-spacing: 0.5px;
 }
 
 .btn-refresh-criteria:hover {
   background: var(--accent-blue);
   color: #fff;
-  border-color: var(--accent-blue);
+  border-color: #38bdf8;
+  box-shadow: 0 4px 10px rgba(56, 189, 248, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+  transform: translateY(-1px);
+}
+
+.btn-refresh-criteria:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
 </style>
