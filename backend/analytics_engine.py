@@ -1003,12 +1003,7 @@ class QuantEngine:
         )
         
         # 6. Comprehensive Debug Logging
-        print(f"--- PREDICTION LOG: {direction} ---")
-        print(f"Price: {current_price} | Tgt: {target_price} (Dist: {price_delta}) | Score: {squeeze_score} | Conf: {confidence}%")
-        print(f"L2: Bids < price ({len(bid_walls)}) | Asks > price ({len(ask_walls)})")
-        print(f"Tape: BVol {buy_vol} SVol {sell_vol} | BPress {buy_pressure_pct}% | Spd {tape_speed} | Bias {block_bias}")
-        print(f"PA: 10s Uptrend? {is_10s_uptrend} | Moved Up? {price_moved_up} Moved Dn? {price_moved_down}")
-        print("-----------------------------------")
+
 
     def _find_fractals(self, highs: List[float], lows: List[float], n: int) -> tuple:
         """Finds swing highs and lows based on checking n bars to the left and right."""

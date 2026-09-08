@@ -37,6 +37,8 @@ class IBKRMarketEngine:
         self.depth_ticker = None
         self.mkt_ticker = None
         self.contract = None
+        self._last_tape_tick: Optional[TapeTick] = None
+        self._tape_aggregation_task: Optional[asyncio.Task] = None
 
         # Intelligence Engine
         self.quant_engine = QuantEngine()
@@ -250,7 +252,7 @@ class IBKRMarketEngine:
             async def get_last_1m_vol(contract) -> Optional[float]:
                 try:
                     bars = await scanner_ib.reqHistoricalDataAsync(
-                        contract, endDateTime='', durationStr='5 mins',
+                        contract, endDateTime='', durationStr='1800 S',
                         barSizeSetting='1 min', whatToShow='TRADES',
                         useRTH=False, formatDate=1
                     )
@@ -275,7 +277,6 @@ class IBKRMarketEngine:
 
                 # ── Filter 1: Price must be >= $1.50 and < $15.00
                 if last_price is None or not (1.5 <= last_price < 15.0):
-                    scanner_ib.cancelMktData(contract)
                     continue
                     
                 close_price = ticker.close
@@ -300,7 +301,6 @@ class IBKRMarketEngine:
 
                 vol_ok = (vol and vol > 800_000) or (rv and rv > 3.0)
                 if not vol_ok:
-                    scanner_ib.cancelMktData(contract)
                     continue
 
                 # ── Filter 3: Free Float in [200k, 20M]
@@ -320,13 +320,11 @@ class IBKRMarketEngine:
                         free_float = ss
 
                 if free_float is not None and not (200_000 <= free_float <= 20_000_000):
-                    scanner_ib.cancelMktData(contract)
                     continue
 
                 # ── Filter 4: Last 1-min candle volume > 10k
                 last_1m_vol = await get_last_1m_vol(contract)
                 if last_1m_vol is not None and last_1m_vol <= 10_000:
-                    scanner_ib.cancelMktData(contract)
                     continue
 
                 # ── Passed all filters – build result
@@ -360,15 +358,18 @@ class IBKRMarketEngine:
                     "trend": "up" if (change_pct and change_pct > 0) else "down"
                 })
                 
-                scanner_ib.cancelMktData(contract)
-                
-            for i in range(len(results), len(tickers)):
+            # Clean up all requested market data subscriptions
+            for t in tickers:
                 try:
-                    scanner_ib.cancelMktData(scan_data[i].contractDetails.contract)
-                except:
+                    scanner_ib.cancelMktData(t.contract)
+                except Exception:
                     pass
-                
-            await self.broadcast_callback({"type": "SCANNER_RESULTS", "data": results})
+
+            await self.broadcast_callback({
+                "type": "SCANNER_UPDATE",
+                "data": results
+            })
+            
         except Exception as e:
             print(f"Scanner error: {e}")
             await self.broadcast_callback({"type": "ERROR", "data": {"message": f"Scanner failed: {e}"}})

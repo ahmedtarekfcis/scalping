@@ -158,12 +158,10 @@ export const useMarketStore = defineStore('market', {
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.hostname}:8000/ws/market-data`;
-      console.log('Connecting to WebSocket:', wsUrl);
 
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
-        console.log('WebSocket Connected!');
         this.wsConnected = true;
         this.wsError = false;
         this.wsReconnectAttempts = 0;

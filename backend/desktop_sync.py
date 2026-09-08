@@ -1,0 +1,53 @@
+import time
+import pyperclip
+import pyautogui
+
+# --- CONFIGURE YOUR ABSOLUTE SCREEN COORDINATES HERE ---
+# Use the backend/mouse_locator.py script to find the exact X, Y
+WEBULL_SEARCH_X = 415
+WEBULL_SEARCH_Y = 120
+
+CPRO_SEARCH_X = 150
+CPRO_SEARCH_Y = 130
+
+def sync_ticker_at_location(x: int, y: int):
+    try:
+        # 1. Move mouse to the absolute coordinates
+        pyautogui.moveTo(x, y)
+        
+        # 2. Click to focus the window/widget
+        pyautogui.click()
+        time.sleep(0.1)
+        
+        # 3. Click again into the search box
+        pyautogui.click()
+        time.sleep(0.1)
+        
+        # 4. Select all text
+        pyautogui.hotkey('ctrl', 'a')
+        time.sleep(0.1)
+        
+        # 5. Paste the ticker
+        pyautogui.hotkey('ctrl', 'v')
+        
+        # 6. Wait 1s then enter
+        time.sleep(1.0)
+        pyautogui.press('enter')
+        time.sleep(0.1)
+    except Exception as e:
+        print(f"Error syncing at location ({x}, {y}): {e}")
+
+def sync_all_platforms(symbol: str):
+    try:
+        symbol = symbol.strip().upper()
+        pyperclip.copy(symbol)
+        time.sleep(0.1)
+        
+        # Sync Webull
+        sync_ticker_at_location(WEBULL_SEARCH_X, WEBULL_SEARCH_Y)
+        
+        # Sync CPRO
+        sync_ticker_at_location(CPRO_SEARCH_X, CPRO_SEARCH_Y)
+        
+    except Exception as e:
+        print(f"Error in sync_all_platforms: {e}")

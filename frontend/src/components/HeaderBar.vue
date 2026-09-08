@@ -26,6 +26,12 @@ function handleSymbolSubmit() {
   }
 }
 
+function syncWebull() {
+  if (store.ws && store.ws.readyState === WebSocket.OPEN && store.symbol) {
+    store.ws.send(JSON.stringify({ action: 'SYNC_WEBULL', symbol: store.symbol }));
+  }
+}
+
 const statusClass = computed(() => {
   if (!store.wsConnected) return 'status-disconnected';
   return 'status-live';
@@ -219,6 +225,9 @@ function toggleVoice() {
           placeholder="SYMBOL..." 
           class="symbol-input mono"
         />
+        <button class="btn-sync" @click="syncWebull" title="Sync to Webull">
+          ⮂
+        </button>
       </div>
 
       <div class="chips-container">
@@ -269,6 +278,7 @@ function toggleVoice() {
 
 .symbol-search-wrap {
   display: flex;
+  align-items: center;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -286,6 +296,23 @@ function toggleVoice() {
   outline: none;
   text-transform: uppercase;
   text-align: center;
+}
+
+.btn-sync {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.btn-sync:hover {
+  color: var(--accent-blue);
 }
 
 .status-section {

@@ -148,6 +148,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     await engine.refetch_mtf_data(symbol)
                 elif action == "SCAN":
                     asyncio.create_task(engine.scan_market())
+                elif action == "SYNC_WEBULL":
+                    symbol = msg.get("symbol")
+                    if symbol:
+                        try:
+                            from desktop_sync import sync_all_platforms
+                            asyncio.create_task(asyncio.to_thread(sync_all_platforms, symbol))
+                        except Exception as e:
+                            print(f"Failed to sync webull/cpro: {e}")
                 elif action == "PING":
                     await websocket.send_text(json.dumps({"type": "PONG"}))
             except Exception as e:
