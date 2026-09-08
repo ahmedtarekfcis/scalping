@@ -15,7 +15,7 @@ except ImportError:
 
 from models import DepthLevel, OrderBook, TapeTick, IBKRConnectionConfig, ConnectionStatus
 from analytics_engine import QuantEngine
-
+from momentum_scanner import MomentumDetectionEngine
 
 class IBKRMarketEngine:
     """
@@ -42,6 +42,7 @@ class IBKRMarketEngine:
 
         # Intelligence Engine
         self.quant_engine = QuantEngine()
+        self.momentum_engine = MomentumDetectionEngine()
 
         # Sample market makers for realistic L2 look
         self.mmids = ["ISLD", "ARCA", "EDGA", "EDGX", "BATS", "NSDQ", "DRCT", "MEMX", "IEX", "NYS"]
@@ -256,21 +257,19 @@ class IBKRMarketEngine:
                 market_open = now_est.replace(hour=4, minute=0, second=0, microsecond=0)
             minutes_since_open = max(1.0, (now_est - market_open).total_seconds() / 60.0)
             
-            # Helper: fetch last 1-min candle volume for a contract using dedicated scanner connection
-            async def get_last_1m_vol(contract) -> Optional[float]:
+            # Helper: fetch last 60 1-min candles for momentum engine
+            async def get_historical_1m_bars(contract) -> List[Dict]:
                 try:
                     bars = await scanner_ib.reqHistoricalDataAsync(
-                        contract, endDateTime='', durationStr='1800 S',
+                        contract, endDateTime='', durationStr='3600 S',
                         barSizeSetting='1 min', whatToShow='TRADES',
                         useRTH=False, formatDate=1
                     )
-                    if bars and len(bars) >= 2:
-                        return bars[-2].volume
-                    elif bars:
-                        return bars[-1].volume
+                    if bars:
+                        return [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars]
                 except Exception:
                     pass
-                return None
+                return []
 
             for i, item in enumerate(scan_data[:30]):
                 if len(results) >= 10:
@@ -327,15 +326,30 @@ class IBKRMarketEngine:
                     if ss and not math.isnan(ss) and ss > 0:
                         free_float = ss
 
-                if free_float is not None and not (200_000 <= free_float <= 20_000_000):
-                    continue
-
-                # ── Filter 4: Last 1-min candle volume > 10k
-                last_1m_vol = await get_last_1m_vol(contract)
-                if last_1m_vol is not None and last_1m_vol <= 10_000:
-                    continue
+                # if free_float is not None and not (200_000 <= free_float <= 20_000_000):
+                #     continue
 
                 # ── Passed all filters – build result
+                
+                # Fetch history if we don't have it for this symbol yet
+                tracker = self.momentum_engine.get_tracker(contract.symbol)
+                new_bars = []
+                if not tracker.history:
+                    new_bars = await get_historical_1m_bars(contract)
+                    
+                # ── Filter 4: Ensure it has volume in recent bars
+                # (Replacing the old 10k last bar check with a simpler check on the momentum history)
+                if new_bars and new_bars[-1]['volume'] <= 10_000 and not tracker.history:
+                     continue
+                     
+                momentum_data = self.momentum_engine.evaluate_symbol(
+                    symbol=contract.symbol,
+                    current_price=last_price,
+                    current_vol=vol or 0,
+                    daily_gain=change_pct or 0,
+                    new_bars=new_bars
+                )
+
                 vol_str = "--"
                 if vol:
                     if vol > 1_000_000:
@@ -362,7 +376,9 @@ class IBKRMarketEngine:
                     "volume": vol_str,
                     "rv": f"{rv:.1f}x" if rv else "--",
                     "freeFloat": format_large(free_float),
-                    "reason": "Momentum",
+                    "reason": momentum_data["reason"],
+                    "state": momentum_data["state"],
+                    "score": momentum_data["score"],
                     "trend": "up" if (change_pct and change_pct > 0) else "down"
                 })
                 

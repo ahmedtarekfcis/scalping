@@ -121,8 +121,8 @@
             <input 
               type="number" 
               v-model.number="store.tapeMinSize" 
-              placeholder="500" 
-              min="1" 
+              placeholder="0" 
+              min="0" 
               step="100"
               class="th-size-input"
             />
@@ -184,7 +184,7 @@
       </div>
 
       <div v-if="filteredTape.length === 0" class="empty-state">
-        Listening to tape prints (Min: {{ store.tapeMinSize || 100 }} shares)...
+        Listening to tape prints (Min: {{ store.tapeMinSize || 0 }} shares)...
       </div>
     </div>
   </div>
@@ -237,8 +237,8 @@ const surgeSpeedClass = computed(() => {
 
 const filteredTape = computed(() => {
   const minThreshold = (store.tapeMinSize !== undefined && store.tapeMinSize !== null && store.tapeMinSize !== '')
-    ? Math.max(1, Number(store.tapeMinSize))
-    : 100;
+    ? Math.max(0, Number(store.tapeMinSize))
+    : 0;
   return (store.tape || []).filter(t => t.size >= minThreshold);
 });
 
@@ -289,10 +289,17 @@ function formatTime(timeStr) {
   return timeStr;
 }
 
-// Format numbers without dividing by 1000
+function formatLots(num) {
+  const lotSize = 100;
+  if (num < lotSize) return '0';
+  const lots = Math.floor(num / lotSize);
+  return lots.toLocaleString();
+}
+
+// Format numbers using lots
 function formatNum(num) {
   if (num === undefined || num === null || isNaN(num)) return '0';
-  return Number(num).toLocaleString();
+  return formatLots(num);
 }
 </script>
 

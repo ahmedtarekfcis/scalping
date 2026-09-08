@@ -94,9 +94,16 @@ import { useMarketStore } from '../stores/marketStore';
 
 const store = useMarketStore();
 
+function formatLots(num) {
+  const lotSize = 100;
+  if (num < lotSize) return '0';
+  const lots = Math.floor(num / lotSize);
+  return lots.toLocaleString();
+}
+
 function formatNum(num) {
-  if (num === undefined || num === null) return '0';
-  return num.toLocaleString();
+  if (num === undefined || num === null || isNaN(num)) return '0';
+  return formatLots(num);
 }
 </script>
 

@@ -37,7 +37,7 @@ export const useMarketStore = defineStore('market', {
     // Time & Sales (Tape)
     tape: [], // Max 30 elements rolling
     maxTapeLength: 30,
-    tapeMinSize: 500, // Default filter out < 500 shares
+    tapeMinSize: 0, // Default no size filter
     
     // Market Intelligence
     intelligence: {
