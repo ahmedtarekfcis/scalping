@@ -274,7 +274,7 @@ const activeMomentumScans = computed(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 18px;
+  padding: 6px 14px;
   gap: 16px;
   flex-wrap: wrap;
 }
@@ -381,7 +381,7 @@ const activeMomentumScans = computed(() => {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
-  padding: 7px 14px;
+  padding: 4px 8px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -395,8 +395,8 @@ const activeMomentumScans = computed(() => {
 
 .api-status-dot {
   position: fixed;
-  top: 10px;
-  right: 10px;
+  top: 4px;
+  right: 4px;
   width: 10px;
   height: 10px;
   border-radius: 50%;

@@ -1,11 +1,6 @@
 <template>
   <div class="app-layout">
-    <!-- Top Right Connection Dot -->
-    <div 
-      class="connection-status-dot" 
-      :class="store.wsConnected ? 'dot-connected' : 'dot-disconnected'"
-      :title="store.wsConnected ? 'Connected to IBKR' : 'Disconnected'"
-    ></div>
+    <!-- Removed redundant connection dot, handled in HeaderBar -->
 
     <!-- Top Nav / Ticker Bar -->
     <HeaderBar />
@@ -44,8 +39,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 16px;
-  gap: 14px;
+  padding: 6px 16px 16px 16px;
+  gap: 8px;
   box-sizing: border-box;
   background: radial-gradient(circle at 50% 0%, #151d2e 0%, var(--bg-primary) 70%);
 }

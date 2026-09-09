@@ -173,6 +173,37 @@ const isMtfCollapsed = ref(false);
   .dashboard-grid {
     flex-direction: column;
   }
+
+  .right-panel-col.collapsed {
+    flex: 0 0 38px !important;
+    min-height: 38px !important;
+    max-height: 38px;
+    min-width: 100% !important;
+    max-width: 100%;
+  }
+
+  .right-panel-col.collapsed .mtf-toggle-tab {
+    position: static;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 6px;
+    background: rgba(22, 32, 50, 0.95);
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .right-panel-col.collapsed .collapsed-title {
+    writing-mode: horizontal-tb;
+    transform: none;
+    margin-top: 0;
+    font-size: 12px;
+  }
+
+  .right-panel-col.collapsed .toggle-arrow {
+    transform: rotate(90deg);
+    display: inline-block;
+  }
 }
 
 .empty-ticker-state {
