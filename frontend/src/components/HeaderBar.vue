@@ -394,10 +394,13 @@ const activeMomentumScans = computed(() => {
 }
 
 .api-status-dot {
+  position: fixed;
+  top: 10px;
+  right: 10px;
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  margin-right: 12px;
+  z-index: 10000;
 }
 
 .api-status-dot.connected {
@@ -432,8 +435,7 @@ const activeMomentumScans = computed(() => {
 .toast-container {
   position: fixed;
   top: 20px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 20px;
   display: flex;
   flex-direction: column;
   gap: 10px;
