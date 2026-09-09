@@ -4,10 +4,9 @@
       <span class="col-symbol">SYMBOL</span>
       <span class="col-price">PRICE</span>
       <span class="col-change">CHANGE</span>
-      <span class="col-vol">TODAY VOL</span>
+      <span class="col-vol">VOL</span>
       <span class="col-rv">RV</span>
-      <span class="col-float">FLOAT</span>
-      <span class="col-action">ACTION</span>
+      <span class="col-score">SCORE</span>
     </div>
 
     <div class="table-body">
@@ -31,12 +30,7 @@
         </span>
         <span class="col-vol">{{ item.volume }}</span>
         <span class="col-rv">{{ item.rv }}</span>
-        <span class="col-float">{{ item.freeFloat }}</span>
-        <div class="col-action">
-          <button class="btn-trade" @click="$emit('select-symbol', item.symbol)">
-            TRADE
-          </button>
-        </div>
+        <span class="col-score font-bold" :class="getScoreClass(item.score)">{{ item.score || 0 }}</span>
       </div>
     </div>
   </div>
@@ -57,6 +51,19 @@ function getChangeClass(change) {
   if (change < 0) return 'text-red text-glow-red';
   return 'text-muted';
 }
+
+function getScoreClass(score) {
+  if (score >= 75) return 'text-green text-glow-green';
+  if (score >= 40) return 'text-yellow';
+  return 'text-muted';
+}
+
+function getStateClass(state) {
+  if (state === 'ACTIVE') return 'badge-up';
+  if (state === 'COOLING') return 'badge-warning';
+  if (state === 'EXPIRED') return 'badge-down';
+  return 'badge-neutral';
+}
 </script>
 
 <style scoped>
@@ -72,7 +79,7 @@ function getChangeClass(change) {
 
 .table-header {
   display: grid;
-  grid-template-columns: 100px 100px 100px 120px 80px 1fr 100px;
+  grid-template-columns: 80px 80px 80px 90px 60px 1fr;
   align-items: center;
   padding: 12px 16px;
   font-size: 12px;
@@ -106,7 +113,7 @@ function getChangeClass(change) {
 
 .scan-row {
   display: grid;
-  grid-template-columns: 100px 100px 100px 120px 80px 1fr 100px;
+  grid-template-columns: 80px 80px 80px 90px 60px 1fr;
   align-items: center;
   padding: 12px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
@@ -174,6 +181,18 @@ function getChangeClass(change) {
   border: 1px solid rgba(255, 59, 86, 0.3);
 }
 
+.badge-warning {
+  background: rgba(250, 204, 21, 0.15);
+  color: #facc15;
+  border: 1px solid rgba(250, 204, 21, 0.3);
+}
+
+.badge-neutral {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
 .btn-trade {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
@@ -196,6 +215,7 @@ function getChangeClass(change) {
 
 .text-green { color: var(--green-bid); }
 .text-red { color: var(--red-ask); }
+.text-yellow { color: #facc15; }
 .text-glow-green { text-shadow: 0 0 10px rgba(0, 208, 132, 0.4); }
 .text-glow-red { text-shadow: 0 0 10px rgba(255, 59, 86, 0.4); }
 

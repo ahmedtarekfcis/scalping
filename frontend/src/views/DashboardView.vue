@@ -16,15 +16,16 @@
       <!-- Right Column: MTF Confluence & Price Action/Momentum (Collapsible Slide Right) -->
       <section class="grid-col right-panel-col" :class="{ 'collapsed': isMtfCollapsed }">
         <button 
+          v-if="isMtfCollapsed"
           class="mtf-toggle-tab" 
-          @click="isMtfCollapsed = !isMtfCollapsed" 
-          :title="isMtfCollapsed ? 'Expand MTF Confluence' : 'Collapse MTF Confluence'"
+          @click="isMtfCollapsed = false" 
+          title="Expand MTF Confluence"
         >
-          <span class="toggle-arrow">{{ isMtfCollapsed ? '◀' : '▶' }}</span>
-          <span v-if="isMtfCollapsed" class="collapsed-title mono">MTF CONFLUENCE</span>
+          <span class="toggle-arrow">◀</span>
+          <span class="collapsed-title mono">MTF CONFLUENCE</span>
         </button>
         <div class="mtf-inner" v-show="!isMtfCollapsed">
-          <MTFConfluence />
+          <MTFConfluence @collapse-mtf="isMtfCollapsed = true" />
         </div>
       </section>
     </template>

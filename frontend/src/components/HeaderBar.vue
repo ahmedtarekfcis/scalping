@@ -198,6 +198,14 @@ function toggleVoice() {
     window.speechSynthesis.cancel();
   }
 }
+
+const activeMomentumScans = computed(() => {
+  if (!store.scannerResults) return [];
+  return store.scannerResults
+    .filter(item => item.state === 'ACTIVE')
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 5);
+});
 </script>
 
 <template>
@@ -232,17 +240,20 @@ function toggleVoice() {
 
       <div class="chips-container">
         <button 
-          v-for="item in store.scannerResults.slice(0, 5)" 
+          v-for="item in activeMomentumScans" 
           :key="item.symbol"
           class="scan-chip mono"
           :class="{ 'chip-up': item.trend === 'up', 'chip-down': item.trend === 'down' }"
           @click="store.changeSymbol(item.symbol)"
           :title="item.reason"
         >
-          {{ item.symbol }} <span class="chip-change">{{ item.changePercent > 0 ? '+' : '' }}{{ item.changePercent }}%</span>
+          {{ item.symbol }} 
+          <div style="display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; background: rgba(250, 204, 21, 0.2); border: 1px solid rgba(250, 204, 21, 0.5); border-radius: 4px; color: #facc15; font-size: 11px; margin-left: 6px;">
+            {{ item.score }}
+          </div>
         </button>
-        <span v-if="!store.scannerResults || store.scannerResults.length === 0" class="text-muted" style="font-size: 11px;">
-          No recent scans
+        <span v-if="activeMomentumScans.length === 0" class="text-muted" style="font-size: 11px;">
+          No ACTIVE Momentum
         </span>
       </div>
     </div>

@@ -235,7 +235,7 @@ export const useMarketStore = defineStore('market', {
           this.intelligence = { ...this.intelligence, ...msg.data };
           break;
 
-        case 'SCANNER_RESULTS':
+        case 'SCANNER_UPDATE':
           this.scannerResults = msg.data || [];
           this.isScanning = false;
           break;

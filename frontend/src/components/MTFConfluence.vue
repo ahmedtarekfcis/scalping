@@ -5,13 +5,23 @@
       <div class="mtf-section">
         <div class="momentum-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <h3 class="font-bold" style="color: var(--text-primary);">MTF</h3>
-          <button 
-            @click="handleMtfRefresh" 
-            class="btn-refresh-criteria" 
-            title="Refetch S&R Levels"
-          >
-            {{ (!store.intelligence.mtf_levels || store.intelligence.mtf_levels.length === 0) ? '↻ Loading...' : '↻ Refresh' }}
-          </button>
+          <div style="display: flex; gap: 8px;">
+            <button 
+              @click="handleMtfRefresh" 
+              class="btn-refresh-criteria" 
+              title="Refetch S&R Levels"
+            >
+              {{ (!store.intelligence.mtf_levels || store.intelligence.mtf_levels.length === 0) ? '↻ Loading...' : '↻ Refresh' }}
+            </button>
+            <button 
+              @click="$emit('collapse-mtf')" 
+              class="btn-refresh-criteria" 
+              style="padding: 2px 8px; font-size: 10px;" 
+              title="Collapse MTF Panel"
+            >
+              ▶
+            </button>
+          </div>
         </div>
 
         <div class="mtf-table-header">
@@ -91,6 +101,7 @@ import { computed, ref, watch, onUnmounted } from 'vue';
 import { useMarketStore } from '../stores/marketStore';
 
 const store = useMarketStore();
+defineEmits(['collapse-mtf']);
 
 const flashCriteria = ref(false);
 const flashMtf = ref(false);
