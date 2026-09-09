@@ -4,11 +4,11 @@ import pyautogui
 
 # --- CONFIGURE YOUR ABSOLUTE SCREEN COORDINATES HERE ---
 # Use the backend/mouse_locator.py script to find the exact X, Y
-WEBULL_SEARCH_X = 415
+WEBULL_SEARCH_X = 645
 WEBULL_SEARCH_Y = 120
 
-CPRO_SEARCH_X = 150
-CPRO_SEARCH_Y = 130
+CPRO_SEARCH_X = 160
+CPRO_SEARCH_Y = 125
 
 def sync_ticker_at_location(x: int, y: int):
     try:
