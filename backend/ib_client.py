@@ -275,8 +275,8 @@ class IBKRMarketEngine:
             # Qualify contracts first (essential for reqMktData)
             await scanner_ib.qualifyContractsAsync(*contracts)
             
-            # Request streaming market data with 165 (Misc Stats for Avg Volume).
-            tickers = [scanner_ib.reqMktData(c, '165,233', False, False) for c in contracts]
+            # Request streaming market data with 165 (Misc Stats), 233 (RTVolume), 258 (Fundamental Ratios for Float)
+            tickers = [scanner_ib.reqMktData(c, '165,233,258', False, False) for c in contracts]
             
             # Wait up to 1.5s for data to populate
             await asyncio.sleep(1.5)
@@ -355,6 +355,11 @@ class IBKRMarketEngine:
                         
             print(f"[SCAN] Scanner generated {len(scan_data[:30])} candidates, {len(finalists)} survived fast filters.")
 
+            # Limit historical data requests to avoid pacing violations (Limit is 60 req/10 mins)
+            # Scan runs every 15 seconds (4x/min). Max 1 req/scan = 4 req/min = 40 req/10 mins. Safe.
+            MAX_HIST_REQS = 1
+            hist_reqs_this_scan = 0
+
             # Process historical data and momentum for finalists only
             for f in finalists:
                 contract = f["contract"]
@@ -368,18 +373,22 @@ class IBKRMarketEngine:
                 tracker = self.momentum_engine.get_tracker(contract.symbol)
                 new_bars = []
                 
-                # Historical Market Data fetch commented out to prevent API pacing / subscription cancellation
-                # if not tracker.history:
-                #     bars_obj = await self._safe_req_historical_data(
-                #         scanner_ib, contract, durationStr='3600 S',
-                #         barSizeSetting='1 min', whatToShow='TRADES',
-                #         useRTH=False, formatDate=1
-                #     )
-                #     if bars_obj:
-                #         new_bars = [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_obj]
-                #     
-                # if new_bars and new_bars[-1]['volume'] <= 10_000 and not tracker.history:
-                #      continue
+                if not tracker.history:
+                    if hist_reqs_this_scan < MAX_HIST_REQS:
+                        hist_reqs_this_scan += 1
+                        try:
+                            bars_obj = await self._safe_req_historical_data(
+                                scanner_ib, contract, durationStr='3600 S',
+                                barSizeSetting='1 min', whatToShow='TRADES',
+                                useRTH=False, formatDate=1
+                            )
+                            if bars_obj:
+                                new_bars = [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_obj]
+                        except Exception as e:
+                            print(f"[SCAN] Failed history fetch for {contract.symbol}: {e}")
+                            
+                if new_bars and new_bars[-1]['volume'] <= 10_000 and not tracker.history:
+                     continue
                      
                 momentum_data = self.momentum_engine.evaluate_symbol(
                     symbol=contract.symbol,
