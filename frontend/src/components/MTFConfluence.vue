@@ -1,81 +1,56 @@
 <template>
   <div class="mtf-panel glass-panel">
+    <!-- Mobile-style collapse handle -->
+    <div class="mobile-collapse-handle" @click="$emit('collapse-mtf')" title="Collapse MTF Panel">
+      <div class="handle-bar"></div>
+    </div>
     <div class="mtf-content mono">
       <!-- Section 1: MTF Floors & Walls Table -->
-      <div class="mtf-section">
-        <div class="momentum-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h3 class="font-bold" style="color: var(--text-primary);">MTF</h3>
-          <div style="display: flex; gap: 8px;">
-            <button 
-              @click="handleMtfRefresh" 
-              class="btn-refresh-criteria" 
-              title="Refetch S&R Levels"
-            >
-              {{ (!store.intelligence.mtf_levels || store.intelligence.mtf_levels.length === 0) ? '↻ Loading...' : '↻ Refresh' }}
-            </button>
-            <button 
-              @click="$emit('collapse-mtf')" 
-              class="btn-refresh-criteria" 
-              style="padding: 2px 8px; font-size: 10px;" 
-              title="Collapse MTF Panel"
-            >
-              ▶
-            </button>
-          </div>
-        </div>
-
-        <div class="mtf-table-header">
-          <span class="th-frame">FRAME</span>
-          <span class="th-floor">FLOOR</span>
-          <span class="th-wall">WALL</span>
-        </div>
+      <div class="mtf-section" style="position: relative;">
+        <button 
+          @click="handleMtfRefresh" 
+          class="btn-refresh-criteria btn-float" 
+          title="Refetch S&R Levels"
+        >
+          ↻
+        </button>
 
         <div class="mtf-rows" :class="{ 'flash-white': flashMtf }">
           <div 
             v-for="item in frameRows" 
             :key="item.frame"
-            class="mtf-frame-row"
+            class="mtf-frame-card"
           >
-            <!-- Timeframe Box Badge -->
-            <div class="col-frame">
-              <span class="badge-tf">{{ item.frame }}</span>
+            <!-- Floated Badge -->
+            <div class="frame-badge-float">
+              {{ item.frame }}
             </div>
-
-            <!-- Floor Column (Price or '-') -->
-            <div class="col-floor">
-              <span 
-                class="val-price font-bold" 
-                :class="item.floor ? 'text-green text-glow-green' : 'text-dash'"
-              >
-                {{ item.floor ? `$${Number(item.floor).toFixed(2)}` : '-' }}
-              </span>
-            </div>
-
-            <!-- Wall Column (Price or '-') -->
-            <div class="col-wall">
-              <span 
-                class="val-price font-bold" 
-                :class="item.wall ? 'text-red text-glow-red' : 'text-dash'"
-              >
-                {{ item.wall ? `$${Number(item.wall).toFixed(2)}` : '-' }}
-              </span>
+            
+            <div class="frame-card-levels">
+              <div class="level-col-card">
+                <span class="val-price font-bold" :class="item.floor ? 'text-green text-glow-green' : 'text-dash'">
+                  {{ item.floor ? `$${Number(item.floor).toFixed(2)}` : '-' }}
+                </span>
+              </div>
+              <div class="level-col-card">
+                <span class="val-price font-bold" :class="item.wall ? 'text-red text-glow-red' : 'text-dash'">
+                  {{ item.wall ? `$${Number(item.wall).toFixed(2)}` : '-' }}
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       <!-- Section 2: critrias (Colored Red if below, Green if above) -->
-      <div class="momentum-section">
-        <div class="momentum-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <span class="momentum-title">critrias</span>
-          <button 
-            @click="handleCriteriaRefresh" 
-            class="btn-refresh-criteria" 
-            title="Refetch Moving Averages"
-          >
-            {{ !store.intelligence.ema_9 ? '↻ Loading...' : '↻ Refresh' }}
-          </button>
-        </div>
+      <div class="momentum-section" style="position: relative;">
+        <button 
+          @click="handleCriteriaRefresh" 
+          class="btn-refresh-criteria btn-float" 
+          title="Refetch Moving Averages"
+        >
+          ↻
+        </button>
 
         <div class="metric-grid" :class="{ 'flash-white': flashCriteria }">
           <div 
@@ -239,6 +214,36 @@ const momentumMetrics = computed(() => {
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+.mobile-collapse-handle {
+  width: 100%;
+  padding: 8px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.mobile-collapse-handle:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mobile-collapse-handle:hover .handle-bar {
+  background: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+}
+
+.handle-bar {
+  width: 36px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
 .panel-header {
   display: flex;
   justify-content: space-between;
@@ -306,111 +311,79 @@ const momentumMetrics = computed(() => {
 .mtf-content {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: 6px 14px 12px 14px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 16px;
 }
 
 .mtf-section {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-/* Table Header */
-.mtf-table-header {
-  display: grid;
-  grid-template-columns: 88px 1fr 1fr;
-  align-items: center;
-  padding: 8px 14px;
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--text-muted);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(10, 14, 22, 0.65);
-  border-radius: 4px;
-}
-
-.th-frame {
-  text-align: left;
-}
-
-.th-floor {
-  text-align: right;
-  padding-right: 14px;
-  color: var(--green-bid);
-}
-
-.th-wall {
-  text-align: right;
-  padding-right: 6px;
-  color: var(--red-ask);
-}
-
-/* Frame Rows List */
+/* Frame Rows Grid */
 .mtf-rows {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.mtf-frame-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-}
-
-.mtf-frame-row {
-  display: grid;
-  grid-template-columns: 88px 1fr 1fr;
-  align-items: center;
-  padding: 9px 14px;
-  min-height: 46px;
-  box-sizing: border-box;
   background: rgba(255, 255, 255, 0.025);
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 14px 6px 6px 6px;
+  gap: 8px;
   transition: all 0.15s ease;
+  box-sizing: border-box;
 }
 
-.mtf-frame-row:hover {
+.mtf-frame-card:hover {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(56, 189, 248, 0.35);
 }
 
-/* Frame Box Column */
-.col-frame {
-  display: flex;
-  align-items: center;
-}
-
-.badge-tf {
-  background: linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(37, 99, 235, 0.25) 100%);
+.frame-badge-float {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  background: rgba(37, 99, 235, 0.4);
   color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.45);
-  padding: 4px 9px;
-  border-radius: 5px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 1px 5px;
+  border-top-left-radius: 6px;
+  border-bottom-right-radius: 6px;
   font-weight: 900;
-  font-size: 14px;
+  font-size: 9px;
   letter-spacing: 0.5px;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.18);
-  min-width: 60px;
-  text-align: center;
-  box-sizing: border-box;
+  z-index: 2;
 }
 
-/* Side Columns */
-.col-floor {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  padding-right: 14px;
+.frame-card-levels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
 }
 
-.col-wall {
+.level-col-card {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
   align-items: center;
-  padding-right: 6px;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  padding: 4px 0;
+  min-height: 24px;
 }
 
 .val-price {
-  font-size: 17px;
+  font-size: 13px;
   font-weight: 900;
   letter-spacing: 0.3px;
 }
@@ -440,12 +413,12 @@ const momentumMetrics = computed(() => {
 
 /* Section 2: Momentum Section */
 .momentum-section {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  padding-top: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  padding-left: 16px;
 }
 
 .momentum-header {
@@ -605,5 +578,20 @@ const momentumMetrics = computed(() => {
 .btn-refresh-criteria:active {
   transform: translateY(1px);
   box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.btn-float {
+  position: absolute;
+  top: -12px;
+  right: -4px;
+  padding: 2px 6px;
+  font-size: 13px;
+  border-radius: 4px;
+  z-index: 10;
+  opacity: 0.6;
+}
+
+.btn-float:hover {
+  opacity: 1;
 }
 </style>

@@ -434,8 +434,8 @@ const activeMomentumScans = computed(() => {
 
 .toast-container {
   position: fixed;
-  top: 20px;
-  right: 20px;
+  top: 6px;
+  right: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;

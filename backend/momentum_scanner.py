@@ -205,7 +205,7 @@ class MomentumDetectionEngine:
             
         metrics = self._calc_metrics(tracker, current_price, current_vol, daily_gain)
         if not metrics:
-            return {"state": tracker.state.value, "reason": f"Gathering data... | +{daily_gain:.1f}% Day", "score": 0}
+            return {"state": tracker.state.value, "reason": f"Gathering data... | +{daily_gain:.1f}% Day", "score": 0, "metrics": {}}
             
         tracker.momentum_score = self._calculate_score(metrics)
         
@@ -220,7 +220,7 @@ class MomentumDetectionEngine:
 
         if tracker.state == StockMomentumState.EXPIRED:
             if now - tracker.last_alert_time < self.config.cooldown_seconds:
-                return {"state": tracker.state.value, "reason": tracker.reason, "score": tracker.momentum_score}
+                return {"state": tracker.state.value, "reason": tracker.reason, "score": tracker.momentum_score, "metrics": metrics}
             else:
                 tracker.state = StockMomentumState.INACTIVE
                 tracker.reason = f"Monitoring | +{daily_gain:.1f}% Day"
@@ -269,5 +269,6 @@ class MomentumDetectionEngine:
         return {
             "state": tracker.state.value,
             "reason": tracker.reason,
-            "score": tracker.momentum_score
+            "score": tracker.momentum_score,
+            "metrics": metrics
         }

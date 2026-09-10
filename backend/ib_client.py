@@ -8,8 +8,36 @@ from zoneinfo import ZoneInfo
 
 try:
     from ib_insync import IB, Stock, ScannerSubscription, util
+    from ib_insync.objects import DOMLevel
+    import ib_insync.wrapper
     util.patchAsyncio()
     IB_INSYNC_AVAILABLE = True
+
+    # --- Monkey Patch for ib_insync L2 Depth IndexError bug ---
+    orig_updateMktDepthL2 = ib_insync.wrapper.Wrapper.updateMktDepthL2
+
+    def patched_updateMktDepthL2(self, reqId, position, marketMaker, operation, side, price, size, *args, **kwargs):
+        try:
+            orig_updateMktDepthL2(self, reqId, position, marketMaker, operation, side, price, size, *args, **kwargs)
+        except IndexError:
+            ticker = getattr(self, 'reqId2Ticker', {}).get(reqId)
+            if ticker:
+                dom = ticker.domBids if side == 1 else ticker.domAsks
+                if operation == 0:
+                    while len(dom) < position:
+                        dom.append(DOMLevel(0, 0, ''))
+                    dom.insert(position, DOMLevel(price, size, marketMaker))
+                elif operation == 1:
+                    while len(dom) <= position:
+                        dom.append(DOMLevel(0, 0, ''))
+                    dom[position] = DOMLevel(price, size, marketMaker)
+                elif operation == 2:
+                    if position < len(dom):
+                        dom.pop(position)
+
+    ib_insync.wrapper.Wrapper.updateMktDepthL2 = patched_updateMktDepthL2
+    # ------------------------------------------------------------
+
 except ImportError:
     IB_INSYNC_AVAILABLE = False
 
@@ -46,6 +74,10 @@ class IBKRMarketEngine:
 
         # Sample market makers for realistic L2 look
         self.mmids = ["ISLD", "ARCA", "EDGA", "EDGX", "BATS", "NSDQ", "DRCT", "MEMX", "IEX", "NYS"]
+
+        # Historical Data Request Pacing
+        self._hist_semaphore = asyncio.Semaphore(1)
+        self._hist_cache = {}
 
     async def initialize(self):
         """Initial start: ready and idle until symbol subscription"""
@@ -205,8 +237,8 @@ class IBKRMarketEngine:
         if not getattr(self, '_last_scan_time', None):
             self._last_scan_time = 0
             
-        # Rate limit live IBKR scans to once every 15 seconds to prevent pacing violations
-        if (current_time - self._last_scan_time) < 15:
+        # Rate limit live IBKR scans to once every 10 seconds to prevent pacing violations
+        if (current_time - self._last_scan_time) < 10:
             return
             
         self._last_scan_time = current_time
@@ -246,101 +278,108 @@ class IBKRMarketEngine:
             # Request streaming market data with 165 (Misc Stats for Avg Volume).
             tickers = [scanner_ib.reqMktData(c, '165,233', False, False) for c in contracts]
             
-            # Wait up to 2.5s for data to populate
-            await asyncio.sleep(2.5)
+            # Wait up to 1.5s for data to populate
+            await asyncio.sleep(1.5)
             
-            # Calculate minutes since open (EST) for vol/min calculation
-            now_est = datetime.datetime.now(ZoneInfo('America/New_York'))
-            market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
-            if now_est < market_open:
-                # Fallback to pre-market start
-                market_open = now_est.replace(hour=4, minute=0, second=0, microsecond=0)
-            minutes_since_open = max(1.0, (now_est - market_open).total_seconds() / 60.0)
+            # Fast market data filtering
+            finalists = []
             
-            # Helper: fetch last 60 1-min candles for momentum engine
-            async def get_historical_1m_bars(contract) -> List[Dict]:
-                try:
-                    bars = await scanner_ib.reqHistoricalDataAsync(
-                        contract, endDateTime='', durationStr='3600 S',
-                        barSizeSetting='1 min', whatToShow='TRADES',
-                        useRTH=False, formatDate=1
-                    )
-                    if bars:
-                        return [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars]
-                except Exception:
-                    pass
-                return []
-
-            for i, item in enumerate(scan_data[:30]):
-                if len(results) >= 10:
-                    break
+            try:
+                for i, item in enumerate(scan_data[:30]):
+                    contract = item.contractDetails.contract
+                    ticker = tickers[i]
                     
-                contract = item.contractDetails.contract
-                ticker = tickers[i]
+                    last_price = ticker.marketPrice()
+                    if math.isnan(last_price) or last_price == 0:
+                        last_price = None
+
+                    # ── Filter 1: Price must be >= $1.50 and < $15.00
+                    if last_price is None or not (1.5 <= last_price < 15.0):
+                        continue
+                        
+                    close_price = ticker.close
+                    if math.isnan(close_price) or close_price == 0:
+                        close_price = None
+                        
+                    change_pct = None
+                    if last_price and close_price:
+                        change_pct = ((last_price - close_price) / close_price) * 100
+                    elif getattr(ticker, 'changePercent', None) and not math.isnan(ticker.changePercent):
+                        change_pct = ticker.changePercent
+                        
+                    vol = ticker.volume
+                    if math.isnan(vol):
+                        vol = None
+
+                    # ── Filter 2: Volume > 800k  OR  RV > 3x
+                    rv = None
+                    av_vol = getattr(ticker, 'avVolume', None)
+                    if vol and av_vol and not math.isnan(av_vol) and av_vol > 0:
+                        rv = vol / av_vol
+
+                    vol_ok = (vol and vol > 800_000) or (rv and rv > 3.0)
+                    if not vol_ok:
+                        continue
+
+                    # ── Filter 3: Free Float (without shortableShares fallback)
+                    free_float = None
+                    fr = getattr(ticker, 'fundamentalRatios', None)
+                    if fr:
+                        float_val = getattr(fr, 'FLOAT', None) or getattr(fr, 'Float', None)
+                        if float_val:
+                            try:
+                                # IBKR typically provides FLOAT in millions
+                                free_float = float(float_val) * 1_000_000
+                            except Exception:
+                                pass
+
+                    finalists.append({
+                        "contract": contract,
+                        "last_price": last_price,
+                        "change_pct": change_pct,
+                        "vol": vol,
+                        "rv": rv,
+                        "free_float": free_float,
+                        "vol_ok": vol_ok
+                    })
+                    
+                    if len(finalists) >= 10:
+                        break
+            finally:
+                # ALWAYS clean up market-data subscriptions
+                for t in tickers:
+                    try:
+                        scanner_ib.cancelMktData(t.contract)
+                    except Exception:
+                        pass
+                        
+            print(f"[SCAN] Scanner generated {len(scan_data[:30])} candidates, {len(finalists)} survived fast filters.")
+
+            # Process historical data and momentum for finalists only
+            for f in finalists:
+                contract = f["contract"]
+                last_price = f["last_price"]
+                change_pct = f["change_pct"]
+                vol = f["vol"]
+                rv = f["rv"]
+                free_float = f["free_float"]
+                vol_ok = f["vol_ok"]
                 
-                last_price = ticker.marketPrice()
-                if math.isnan(last_price) or last_price == 0:
-                    last_price = None
-
-                # ── Filter 1: Price must be >= $1.50 and < $15.00
-                if last_price is None or not (1.5 <= last_price < 15.0):
-                    continue
-                    
-                close_price = ticker.close
-                if math.isnan(close_price) or close_price == 0:
-                    close_price = None
-                    
-                change_pct = None
-                if last_price and close_price:
-                    change_pct = ((last_price - close_price) / close_price) * 100
-                elif getattr(ticker, 'changePercent', None) and not math.isnan(ticker.changePercent):
-                    change_pct = ticker.changePercent
-                    
-                vol = ticker.volume
-                if math.isnan(vol):
-                    vol = None
-
-                # ── Filter 2: Volume > 800k  OR  RV > 3x
-                rv = None
-                av_vol = getattr(ticker, 'avVolume', None)
-                if vol and av_vol and not math.isnan(av_vol) and av_vol > 0:
-                    rv = vol / av_vol
-
-                vol_ok = (vol and vol > 800_000) or (rv and rv > 3.0)
-                if not vol_ok:
-                    continue
-
-                # ── Filter 3: Free Float in [200k, 20M]
-                free_float = None
-                fr = getattr(ticker, 'fundamentalRatios', None)
-                if fr:
-                    float_val = getattr(fr, 'FLOAT', None) or getattr(fr, 'Float', None)
-                    if float_val:
-                        try:
-                            free_float = float(float_val)
-                        except Exception:
-                            pass
-
-                if free_float is None:
-                    ss = getattr(ticker, 'shortableShares', None)
-                    if ss and not math.isnan(ss) and ss > 0:
-                        free_float = ss
-
-                # if free_float is not None and not (200_000 <= free_float <= 20_000_000):
-                #     continue
-
-                # ── Passed all filters – build result
-                
-                # Fetch history if we don't have it for this symbol yet
                 tracker = self.momentum_engine.get_tracker(contract.symbol)
                 new_bars = []
-                if not tracker.history:
-                    new_bars = await get_historical_1m_bars(contract)
-                    
-                # ── Filter 4: Ensure it has volume in recent bars
-                # (Replacing the old 10k last bar check with a simpler check on the momentum history)
-                if new_bars and new_bars[-1]['volume'] <= 10_000 and not tracker.history:
-                     continue
+                
+                # Historical Market Data fetch commented out to prevent API pacing / subscription cancellation
+                # if not tracker.history:
+                #     bars_obj = await self._safe_req_historical_data(
+                #         scanner_ib, contract, durationStr='3600 S',
+                #         barSizeSetting='1 min', whatToShow='TRADES',
+                #         useRTH=False, formatDate=1
+                #     )
+                #     if bars_obj:
+                #         new_bars = [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_obj]
+                #     
+                # if new_bars and new_bars[-1]['volume'] <= 10_000 and not tracker.history:
+                #      continue
                      
                 momentum_data = self.momentum_engine.evaluate_symbol(
                     symbol=contract.symbol,
@@ -369,25 +408,41 @@ class IBKRMarketEngine:
                     except:
                         return "--"
                         
+                m_metrics = momentum_data.get("metrics") or {}
+                move_5m = m_metrics.get("ret_5m")
+                vol_1m = m_metrics.get("rvol_1m")
+                # Vol Ratio: ratio of current 1m vol vs average 10m vol (or rvol)
+                vol_ratio = m_metrics.get("rvol_1m")
+                vol_accel = m_metrics.get("vol_accel")
+
+                # Get raw 1m volume from the latest bar if present
+                latest_bar_vol = new_bars[-1]["volume"] if new_bars else (vol or 0)
+
                 results.append({
                     "symbol": contract.symbol,
                     "lastPrice": round(last_price, 2),
                     "changePercent": round(change_pct, 2) if change_pct is not None else "--",
+                    "move5m": round(move_5m, 2) if move_5m is not None else None,
+                    "vol1m": format_large(latest_bar_vol),
+                    "volRatio": round(vol_ratio, 2) if vol_ratio is not None else None,
+                    "volAccel": round(vol_accel, 2) if vol_accel is not None else None,
                     "volume": vol_str,
                     "rv": f"{rv:.1f}x" if rv else "--",
                     "freeFloat": format_large(free_float),
                     "reason": momentum_data["reason"],
                     "state": momentum_data["state"],
                     "score": momentum_data["score"],
-                    "trend": "up" if (change_pct and change_pct > 0) else "down"
+                    "trend": "up" if (change_pct and change_pct > 0) else "down",
+                    "specs": {
+                        "price": last_price is not None and (1.5 <= last_price < 15.0),
+                        "vol": vol is not None and vol > 800_000,
+                        "rv": rv is not None and rv > 3.0,
+                        "float": free_float is not None and (200_000 <= free_float <= 20_000_000)
+                    }
                 })
                 
-            # Clean up all requested market data subscriptions
-            for t in tickers:
-                try:
-                    scanner_ib.cancelMktData(t.contract)
-                except Exception:
-                    pass
+            # Sort results by score descending
+            results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
             await self.broadcast_callback({
                 "type": "SCANNER_UPDATE",
@@ -398,48 +453,97 @@ class IBKRMarketEngine:
             print(f"Scanner error: {e}")
             await self.broadcast_callback({"type": "ERROR", "data": {"message": f"Scanner failed: {e}"}})
 
+    async def _safe_req_historical_data(self, client_ib, contract, durationStr, barSizeSetting, whatToShow, useRTH, formatDate, keepUpToDate=False):
+        """
+        Paced and centrally controlled historical data request.
+        Uses exponential backoff for max 3 retries to prevent pacing violations.
+        """
+        max_retries = 3
+        retry_delay = 5.0
+        
+        # Check cache (only for 1 min bars from scanner if keepUpToDate is False)
+        is_scanner_cacheable = (durationStr == '3600 S' and barSizeSetting == '1 min' and not keepUpToDate)
+        if is_scanner_cacheable:
+            cached = self._hist_cache.get(contract.symbol)
+            if cached and (time.time() - cached["timestamp"]) < 60:
+                return cached["bars"]
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Strictly serialize historical data requests globally across the app
+                async with self._hist_semaphore:
+                    # Small intrinsic delay between any historical requests to avoid pacing violations
+                    await asyncio.sleep(0.5)
+                    bars = await client_ib.reqHistoricalDataAsync(
+                        contract, endDateTime='', durationStr=durationStr,
+                        barSizeSetting=barSizeSetting, whatToShow=whatToShow,
+                        useRTH=useRTH, formatDate=formatDate, keepUpToDate=keepUpToDate
+                    )
+                    
+                    if is_scanner_cacheable and bars:
+                        self._hist_cache[contract.symbol] = {
+                            "timestamp": time.time(),
+                            "bars": bars
+                        }
+                        
+                    return bars
+                    
+            except Exception as e:
+                err_str = str(e)
+                print(f"[HIST] {contract.symbol} request attempt {attempt}/{max_retries} failed: {err_str}")
+                
+                is_pacing_error = "162" in err_str or "pacing" in err_str.lower() or "Historical Market Data Service error" in err_str
+                
+                if attempt == max_retries:
+                    print(f"[HIST] {contract.symbol} historical request failed after {max_retries} attempts.")
+                    return []
+                    
+                # Backoff logic
+                if is_pacing_error:
+                    print(f"[HIST] {contract.symbol} pacing error detected - backing off {retry_delay * 2}s")
+                    await asyncio.sleep(retry_delay * 2)
+                    retry_delay *= 2
+                else:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 1.5
+
+        return []
+
     async def _fetch_historical_data_with_retry(self, symbol: str):
-        """Fetches 1D 1-min bars for EMA/VWAP calculation with exponential backoff on failure."""
+        """Fetches 1D 1-min bars for EMA/VWAP calculation."""
         if not self.ib or not self.ib.isConnected() or not self.contract:
             return
             
-        retry_delay = 5
-        max_delay = 60
-        
-        while True:
-            try:
-                bars_1m = await self.ib.reqHistoricalDataAsync(
-                    self.contract, endDateTime='', durationStr='3 D',
-                    barSizeSetting='1 min', whatToShow='TRADES', useRTH=False, formatDate=1,
-                    keepUpToDate=True
-                )
-                
-                bars_4h = await self.ib.reqHistoricalDataAsync(
-                    self.contract, endDateTime='', durationStr='1 M',
-                    barSizeSetting='4 hours', whatToShow='TRADES', useRTH=False, formatDate=1
-                )
-                
-                if bars_1m and bars_4h:
-                    def convert(bars_list):
-                        return [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_list]
-                        
-                    self.quant_engine.process_historical_data('1m', convert(bars_1m), recalc_snr=True)
-                    self.quant_engine.process_historical_data('4h', convert(bars_4h), recalc_snr=True)
+        try:
+            bars_1m = await self._safe_req_historical_data(
+                self.ib, self.contract, durationStr='3 D',
+                barSizeSetting='1 min', whatToShow='TRADES', useRTH=False, formatDate=1,
+                keepUpToDate=True
+            )
+            
+            bars_4h = await self._safe_req_historical_data(
+                self.ib, self.contract, durationStr='1 M',
+                barSizeSetting='4 hours', whatToShow='TRADES', useRTH=False, formatDate=1,
+                keepUpToDate=False
+            )
+            
+            if bars_1m and bars_4h:
+                def convert(bars_list):
+                    return [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_list]
                     
-                    # Attach live update event for 1m bars
-                    self.live_bars_1m = bars_1m
-                    self.live_bars_1m.updateEvent += self._on_1m_bar_update
-                    
-                    await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
-                    return  # Success, exit the loop
-                else:
-                    print(f"Historical data fetch for {symbol} returned empty list. Retrying in {retry_delay}s...")
-                    
-            except Exception as e:
-                print(f"Error fetching historical data for {symbol}: {e}. Retrying in {retry_delay}s...")
+                self.quant_engine.process_historical_data('1m', convert(bars_1m), recalc_snr=True)
+                self.quant_engine.process_historical_data('4h', convert(bars_4h), recalc_snr=True)
                 
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(max_delay, retry_delay * 2)
+                # Attach live update event for 1m bars
+                self.live_bars_1m = bars_1m
+                self.live_bars_1m.updateEvent += self._on_1m_bar_update
+                
+                await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
+            else:
+                print(f"[HIST] Historical data fetch for {symbol} returned empty list.")
+                
+        except Exception as e:
+            print(f"[HIST] Error fetching historical data for {symbol}: {e}")
 
     def _on_1m_bar_update(self, bars, hasNewBar: bool):
         """Native IBKR live update event for 1m bars"""

@@ -61,7 +61,7 @@ function handleSelectSymbol(symbol) {
 
 .scanner-content {
   flex: 1;
-  overflow: hidden;
+  overflow: visible;
   padding: 16px;
   display: flex;
   flex-direction: column;
