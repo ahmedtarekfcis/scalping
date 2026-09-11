@@ -36,6 +36,27 @@ try:
                         dom.pop(position)
 
     ib_insync.wrapper.Wrapper.updateMktDepthL2 = patched_updateMktDepthL2
+
+    # --- Monkey Patch for ib_insync Error logging to add [TWS] prefix ---
+    orig_error = ib_insync.wrapper.Wrapper.error
+
+    def patched_error(self, reqId, errorCode, errorString, contract=None):
+        msg = f"[TWS] Error {errorCode}, reqId {reqId}: {errorString}"
+        if contract:
+            msg += f", contract: {contract}"
+        print(msg)
+        
+        # Suppress the default logger to avoid double-printing, but still run orig_error for events
+        import logging
+        logger = logging.getLogger('ib_insync.wrapper')
+        old_level = logger.level
+        logger.setLevel(logging.CRITICAL)
+        try:
+            orig_error(self, reqId, errorCode, errorString, contract)
+        finally:
+            logger.setLevel(old_level)
+
+    ib_insync.wrapper.Wrapper.error = patched_error
     # ------------------------------------------------------------
 
 except ImportError:
@@ -275,8 +296,9 @@ class IBKRMarketEngine:
             # Qualify contracts first (essential for reqMktData)
             await scanner_ib.qualifyContractsAsync(*contracts)
             
-            # Request streaming market data with 165 (Misc Stats), 233 (RTVolume), 258 (Fundamental Ratios for Float)
-            tickers = [scanner_ib.reqMktData(c, '165,233,258', False, False) for c in contracts]
+            # Request streaming market data with 165 (Misc Stats), 233 (RTVolume)
+            # Note: 258 (Fundamental Ratios) is omitted as it causes Error 300 on some stocks and drops the entire subscription
+            tickers = [scanner_ib.reqMktData(c, '165,233', False, False) for c in contracts]
             
             # Wait up to 1.5s for data to populate
             await asyncio.sleep(1.5)
