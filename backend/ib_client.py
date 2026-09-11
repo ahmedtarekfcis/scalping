@@ -75,7 +75,6 @@ class IBKRMarketEngine:
         self.broadcast_callback = broadcast_callback
         self.config = IBKRConnectionConfig()
         self.ib: Optional[IB] = None
-        self.scanner_ib: Optional[IB] = None
         self.is_connected = False
         self.active_symbol: Optional[str] = None
         self.last_error = None
@@ -91,7 +90,6 @@ class IBKRMarketEngine:
 
         # Intelligence Engine
         self.quant_engine = QuantEngine()
-        self.momentum_engine = MomentumDetectionEngine()
 
         # Sample market makers for realistic L2 look
         self.mmids = ["ISLD", "ARCA", "EDGA", "EDGX", "BATS", "NSDQ", "DRCT", "MEMX", "IEX", "NYS"]
@@ -126,8 +124,6 @@ class IBKRMarketEngine:
         try:
             if self.ib and self.ib.isConnected():
                 self.ib.disconnect()
-            if getattr(self, 'scanner_ib', None) and self.scanner_ib.isConnected():
-                self.scanner_ib.disconnect()
 
             self.ib = IB()
             # Asynchronous connection to TWS
@@ -135,15 +131,6 @@ class IBKRMarketEngine:
                 host=config.host,
                 port=config.port,
                 clientId=config.clientId,
-                timeout=5
-            )
-            
-            # Persistent scanner connection to avoid IB Gateway spam
-            self.scanner_ib = IB()
-            await self.scanner_ib.connectAsync(
-                host=config.host,
-                port=config.port,
-                clientId=config.clientId + 10,
                 timeout=5
             )
             
@@ -156,6 +143,50 @@ class IBKRMarketEngine:
             self.is_connected = False
             return {"status": "error", "mode": "none", "error": str(e)}
 
+    async def subscribe_l2(self, symbol: str):
+        symbol = symbol.upper().strip()
+        if not self.ib or not self.ib.isConnected() or not self.contract:
+            return
+
+        try:
+            if getattr(self, 'depth_ticker', None):
+                self.depth_ticker.updateEvent -= self._on_depth_update
+                self.ib.cancelMktDepth(self.contract)
+        except Exception:
+            pass
+
+        try:
+            self.depth_ticker = self.ib.reqMktDepth(self.contract, numRows=100, isSmartDepth=True)
+            self.depth_ticker.updateEvent += self._on_depth_update
+        except Exception as e:
+            print(f"L2 depth subscription error: {e}")
+
+    async def subscribe_tape(self, symbol: str):
+        symbol = symbol.upper().strip()
+        if not self.ib or not self.ib.isConnected() or not self.contract:
+            return
+
+        try:
+            if getattr(self, 'mkt_ticker', None):
+                self.mkt_ticker.updateEvent -= self._on_mkt_data_update
+                self.ib.cancelMktData(self.contract)
+            if getattr(self, 'ib', None):
+                self.ib.pendingTickersEvent -= self._on_tick_by_tick
+        except Exception:
+            pass
+
+        try:
+            self.mkt_ticker = self.ib.reqMktData(self.contract, '233', False, False)
+            self.mkt_ticker.updateEvent += self._on_mkt_data_update
+
+            try:
+                self.ib.reqTickByTickData(self.contract, 'AllLast', 0, False)
+                self.ib.pendingTickersEvent += self._on_tick_by_tick
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Tape subscription error: {e}")
+
     async def subscribe_symbol(self, symbol: str):
         symbol = symbol.upper().strip()
         self.active_symbol = symbol
@@ -166,17 +197,8 @@ class IBKRMarketEngine:
         if not self.ib or not self.ib.isConnected():
             return
 
-        # Cancel previous subscriptions if any
+        # Cancel historical subscriptions if any
         try:
-            if self.depth_ticker:
-                self.depth_ticker.updateEvent -= self._on_depth_update
-                self.ib.cancelMktDepth(self.contract)
-            if self.mkt_ticker:
-                self.mkt_ticker.updateEvent -= self._on_mkt_data_update
-                self.ib.cancelMktData(self.contract)
-            if self.ib:
-                self.ib.pendingTickersEvent -= self._on_tick_by_tick
-            
             if getattr(self, 'live_bars_1m', None):
                 self.live_bars_1m.updateEvent -= self._on_1m_bar_update
                 try:
@@ -200,23 +222,8 @@ class IBKRMarketEngine:
             except Exception:
                 pass
 
-            # 1. Level 2 Market Depth (numRows=100)
-            try:
-                self.depth_ticker = self.ib.reqMktDepth(self.contract, numRows=100, isSmartDepth=True)
-                self.depth_ticker.updateEvent += self._on_depth_update
-            except Exception as e:
-                print(f"L2 depth subscription error: {e}")
-
-            # 2. Time & Sales / Tick stream & stats (233: RTVolume, 236: Shortable)
-            self.mkt_ticker = self.ib.reqMktData(self.contract, '233', False, False)
-            self.mkt_ticker.updateEvent += self._on_mkt_data_update
-
-            # 3. Tick by tick if supported
-            try:
-                self.ib.reqTickByTickData(self.contract, 'AllLast', 0, False)
-                self.ib.pendingTickersEvent += self._on_tick_by_tick
-            except Exception:
-                pass
+            await self.subscribe_l2(symbol)
+            await self.subscribe_tape(symbol)
 
         except Exception as e:
             self.last_error = f"Subscription error for {symbol}: {e}"
@@ -249,241 +256,6 @@ class IBKRMarketEngine:
         
         self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
 
-    async def scan_market(self):
-        """Scans for momentum stocks using a dedicated IBKR connection to avoid affecting L2 data"""
-        if not IB_INSYNC_AVAILABLE:
-            return
-
-        current_time = time.time()
-        if not getattr(self, '_last_scan_time', None):
-            self._last_scan_time = 0
-            
-        # Rate limit live IBKR scans to once every 10 seconds to prevent pacing violations
-        if (current_time - self._last_scan_time) < 10:
-            return
-            
-        self._last_scan_time = current_time
-
-        if not getattr(self, 'scanner_ib', None) or not self.scanner_ib.isConnected():
-            try:
-                self.scanner_ib = IB()
-                await self.scanner_ib.connectAsync(
-                    host=self.config.host,
-                    port=self.config.port,
-                    clientId=self.config.clientId + 10,
-                    timeout=5
-                )
-            except Exception as e:
-                print(f"Failed to reconnect scanner: {e}")
-                return
-
-        scanner_ib = self.scanner_ib
-        try:
-            # Use the persistent dedicated connection
-            
-            sub = ScannerSubscription(
-                instrument='STK',
-                locationCode='STK.US.MAJOR',
-                scanCode='HOT_BY_VOLUME',
-                abovePrice=1.5
-            )
-            scan_data = await scanner_ib.reqScannerDataAsync(sub)
-            
-            results = []
-            # Grab top 30 to give us enough buffer for custom python filtering
-            contracts = [item.contractDetails.contract for item in scan_data[:30]]
-            
-            # Qualify contracts first (essential for reqMktData)
-            await scanner_ib.qualifyContractsAsync(*contracts)
-            
-            # Request streaming market data with 165 (Misc Stats), 233 (RTVolume)
-            # Note: 258 (Fundamental Ratios) is omitted as it causes Error 300 on some stocks and drops the entire subscription
-            tickers = [scanner_ib.reqMktData(c, '165,233', False, False) for c in contracts]
-            
-            # Wait up to 1.5s for data to populate
-            await asyncio.sleep(1.5)
-            
-            # Fast market data filtering
-            finalists = []
-            
-            try:
-                for i, item in enumerate(scan_data[:30]):
-                    contract = item.contractDetails.contract
-                    ticker = tickers[i]
-                    
-                    last_price = ticker.marketPrice()
-                    if math.isnan(last_price) or last_price == 0:
-                        last_price = None
-
-                    # ── Filter 1: Price must be >= $1.50 and < $15.00
-                    if last_price is None or not (1.5 <= last_price < 15.0):
-                        continue
-                        
-                    close_price = ticker.close
-                    if math.isnan(close_price) or close_price == 0:
-                        close_price = None
-                        
-                    change_pct = None
-                    if last_price and close_price:
-                        change_pct = ((last_price - close_price) / close_price) * 100
-                    elif getattr(ticker, 'changePercent', None) and not math.isnan(ticker.changePercent):
-                        change_pct = ticker.changePercent
-                        
-                    vol = ticker.volume
-                    if math.isnan(vol):
-                        vol = None
-
-                    # ── Filter 2: Volume > 800k  OR  RV > 3x
-                    rv = None
-                    av_vol = getattr(ticker, 'avVolume', None)
-                    if vol and av_vol and not math.isnan(av_vol) and av_vol > 0:
-                        rv = vol / av_vol
-
-                    vol_ok = (vol and vol > 800_000) or (rv and rv > 3.0)
-                    if not vol_ok:
-                        continue
-
-                    # ── Filter 3: Free Float (without shortableShares fallback)
-                    free_float = None
-                    fr = getattr(ticker, 'fundamentalRatios', None)
-                    if fr:
-                        float_val = getattr(fr, 'FLOAT', None) or getattr(fr, 'Float', None)
-                        if float_val:
-                            try:
-                                # IBKR typically provides FLOAT in millions
-                                free_float = float(float_val) * 1_000_000
-                            except Exception:
-                                pass
-
-                    finalists.append({
-                        "contract": contract,
-                        "last_price": last_price,
-                        "change_pct": change_pct,
-                        "vol": vol,
-                        "rv": rv,
-                        "free_float": free_float,
-                        "vol_ok": vol_ok
-                    })
-                    
-                    if len(finalists) >= 10:
-                        break
-            finally:
-                # ALWAYS clean up market-data subscriptions
-                for t in tickers:
-                    try:
-                        scanner_ib.cancelMktData(t.contract)
-                    except Exception:
-                        pass
-                        
-            print(f"[SCAN] Scanner generated {len(scan_data[:30])} candidates, {len(finalists)} survived fast filters.")
-
-            # Limit historical data requests to avoid pacing violations (Limit is 60 req/10 mins)
-            # Scan runs every 15 seconds (4x/min). Max 1 req/scan = 4 req/min = 40 req/10 mins. Safe.
-            MAX_HIST_REQS = 1
-            hist_reqs_this_scan = 0
-
-            # Process historical data and momentum for finalists only
-            for f in finalists:
-                contract = f["contract"]
-                last_price = f["last_price"]
-                change_pct = f["change_pct"]
-                vol = f["vol"]
-                rv = f["rv"]
-                free_float = f["free_float"]
-                vol_ok = f["vol_ok"]
-                
-                tracker = self.momentum_engine.get_tracker(contract.symbol)
-                new_bars = []
-                
-                if not tracker.history:
-                    if hist_reqs_this_scan < MAX_HIST_REQS:
-                        hist_reqs_this_scan += 1
-                        try:
-                            bars_obj = await self._safe_req_historical_data(
-                                scanner_ib, contract, durationStr='3600 S',
-                                barSizeSetting='1 min', whatToShow='TRADES',
-                                useRTH=False, formatDate=1
-                            )
-                            if bars_obj:
-                                new_bars = [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_obj]
-                        except Exception as e:
-                            print(f"[SCAN] Failed history fetch for {contract.symbol}: {e}")
-                            
-                if new_bars and new_bars[-1]['volume'] <= 10_000 and not tracker.history:
-                     continue
-                     
-                momentum_data = self.momentum_engine.evaluate_symbol(
-                    symbol=contract.symbol,
-                    current_price=last_price,
-                    current_vol=vol or 0,
-                    daily_gain=change_pct or 0,
-                    new_bars=new_bars
-                )
-
-                vol_str = "--"
-                if vol:
-                    if vol > 1_000_000:
-                        vol_str = f"{vol/1_000_000:.1f}M"
-                    elif vol > 1_000:
-                        vol_str = f"{vol/1_000:.1f}K"
-                    else:
-                        vol_str = str(int(vol))
-                
-                def format_large(num):
-                    if not num: return "--"
-                    try:
-                        n = float(num)
-                        if n > 1_000_000: return f"{n/1_000_000:.1f}M"
-                        if n > 1_000: return f"{n/1_000:.1f}K"
-                        return str(int(n))
-                    except:
-                        return "--"
-                        
-                m_metrics = momentum_data.get("metrics") or {}
-                move_5m = m_metrics.get("ret_5m")
-                vol_1m = m_metrics.get("rvol_1m")
-                # Vol Ratio: ratio of current 1m vol vs average 10m vol (or rvol)
-                vol_ratio = m_metrics.get("rvol_1m")
-                vol_accel = m_metrics.get("vol_accel")
-
-                # Get raw 1m volume from the latest bar if present
-                latest_bar_vol = new_bars[-1]["volume"] if new_bars else (vol or 0)
-
-                results.append({
-                    "symbol": contract.symbol,
-                    "lastPrice": round(last_price, 2),
-                    "changePercent": round(change_pct, 2) if change_pct is not None else "--",
-                    "move5m": round(move_5m, 2) if move_5m is not None else None,
-                    "vol1m": format_large(latest_bar_vol),
-                    "volRatio": round(vol_ratio, 2) if vol_ratio is not None else None,
-                    "volAccel": round(vol_accel, 2) if vol_accel is not None else None,
-                    "volume": vol_str,
-                    "rv": f"{rv:.1f}x" if rv else "--",
-                    "freeFloat": format_large(free_float),
-                    "reason": momentum_data["reason"],
-                    "state": momentum_data["state"],
-                    "score": momentum_data["score"],
-                    "trend": "up" if (change_pct and change_pct > 0) else "down",
-                    "specs": {
-                        "price": last_price is not None and (1.5 <= last_price < 15.0),
-                        "vol": vol is not None and vol > 800_000,
-                        "rv": rv is not None and rv > 3.0,
-                        "float": free_float is not None and (200_000 <= free_float <= 20_000_000)
-                    }
-                })
-                
-            # Sort results by score descending
-            results.sort(key=lambda x: x.get("score", 0), reverse=True)
-
-            await self.broadcast_callback({
-                "type": "SCANNER_UPDATE",
-                "data": results
-            })
-            
-        except Exception as e:
-            print(f"Scanner error: {e}")
-            await self.broadcast_callback({"type": "ERROR", "data": {"message": f"Scanner failed: {e}"}})
-
     async def _safe_req_historical_data(self, client_ib, contract, durationStr, barSizeSetting, whatToShow, useRTH, formatDate, keepUpToDate=False):
         """
         Paced and centrally controlled historical data request.
@@ -491,13 +263,6 @@ class IBKRMarketEngine:
         """
         max_retries = 3
         retry_delay = 5.0
-        
-        # Check cache (only for 1 min bars from scanner if keepUpToDate is False)
-        is_scanner_cacheable = (durationStr == '3600 S' and barSizeSetting == '1 min' and not keepUpToDate)
-        if is_scanner_cacheable:
-            cached = self._hist_cache.get(contract.symbol)
-            if cached and (time.time() - cached["timestamp"]) < 60:
-                return cached["bars"]
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -510,12 +275,6 @@ class IBKRMarketEngine:
                         barSizeSetting=barSizeSetting, whatToShow=whatToShow,
                         useRTH=useRTH, formatDate=formatDate, keepUpToDate=keepUpToDate
                     )
-                    
-                    if is_scanner_cacheable and bars:
-                        self._hist_cache[contract.symbol] = {
-                            "timestamp": time.time(),
-                            "bars": bars
-                        }
                         
                     return bars
                     
@@ -594,7 +353,7 @@ class IBKRMarketEngine:
                 pass
 
     def _on_depth_update(self, ticker):
-        if not ticker or not ticker.domBids or ticker.contract.symbol != self.active_symbol:
+        if not ticker or ticker.contract.symbol != self.active_symbol:
             return
 
         bids = [

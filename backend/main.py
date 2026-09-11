@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from models import IBKRConnectionConfig, ConnectionStatus
 from ib_client import IBKRMarketEngine
+from scanner_engine import IBKRScannerEngine
 
 app = FastAPI(title="TradeEdge.ai", version="1.0.0")
 
@@ -44,6 +45,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 engine = IBKRMarketEngine(broadcast_callback=manager.broadcast)
+scanner = IBKRScannerEngine(broadcast_callback=manager.broadcast)
 
 
 @app.on_event("startup")
@@ -56,7 +58,7 @@ async def startup_event():
         await asyncio.sleep(5)
         while True:
             try:
-                await engine.scan_market()
+                await scanner.scan_market()
             except Exception as e:
                 print(f"Error in continuous scanner: {e}")
             await asyncio.sleep(15)
@@ -72,6 +74,7 @@ async def get_status():
 @app.post("/api/connect")
 async def connect_ibkr(config: IBKRConnectionConfig):
     result = await engine.connect_ibkr(config)
+    await scanner.connect(config)
     # Broadcast new connection status
     await manager.broadcast({
         "type": "STATUS_UPDATE",
@@ -136,6 +139,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     cfg_dict = msg.get("config", {})
                     cfg = IBKRConnectionConfig(**cfg_dict)
                     await engine.connect_ibkr(cfg)
+                    await scanner.connect(cfg)
                     await manager.broadcast({
                         "type": "STATUS_UPDATE",
                         "data": engine.get_status().dict()
@@ -147,7 +151,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     symbol = msg.get("symbol", "TSLA")
                     await engine.refetch_mtf_data(symbol)
                 elif action == "SCAN":
-                    asyncio.create_task(engine.scan_market())
+                    asyncio.create_task(scanner.scan_market())
                 elif action == "SYNC_WEBULL":
                     symbol = msg.get("symbol")
                     if symbol:
