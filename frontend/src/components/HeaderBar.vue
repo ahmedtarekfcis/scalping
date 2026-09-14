@@ -202,7 +202,7 @@ function toggleVoice() {
 const activeMomentumScans = computed(() => {
   if (!store.scannerResults) return [];
   return store.scannerResults
-    .filter(item => item.state === 'ACTIVE')
+    .filter(item => item.score > 50)
     .sort((a, b) => (b.score || 0) - (a.score || 0))
     .slice(0, 5);
 });
