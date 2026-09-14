@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 class SpoofingWatcher:
     def __init__(self):

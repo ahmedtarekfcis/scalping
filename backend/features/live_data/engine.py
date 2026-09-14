@@ -87,11 +87,13 @@ class LiveDataEngine:
             self.client.ib.pendingTickersEvent += self._on_tick_by_tick
 
     async def subscribe_symbol(self, symbol: str):
+        print(f"\n[LIVE DATA] Subscribing to symbol: {symbol}")
         symbol = symbol.upper().strip()
         self.active_symbol = symbol
         self.quant_engine.reset(symbol)
 
         if not self.client.is_connected:
+            print("[LIVE DATA] Error: IBKR Client is not connected! Cannot subscribe.")
             return
 
         try:
@@ -102,19 +104,23 @@ class LiveDataEngine:
 
             if self.hist_fetch_task and not self.hist_fetch_task.done():
                 self.hist_fetch_task.cancel()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LIVE DATA] Error clearing previous subscriptions: {e}")
 
+        print(f"[LIVE DATA] Qualifying contract for {symbol}...")
         self.contract = await self.client.qualify_contract(symbol)
         if not self.contract:
+            print(f"[LIVE DATA] Failed to qualify contract for {symbol}.")
             if self.broadcast_callback:
                 await self.broadcast_callback({"type": "ERROR", "data": {"message": self.client.last_error}})
             return
 
+        print(f"[LIVE DATA] Contract qualified! Requesting market data and depth...")
         self.client.req_market_data_type(3)
         await self.subscribe_l2(symbol)
         await self.subscribe_tape(symbol)
 
+        print(f"[LIVE DATA] Starting historical data fetch task for {symbol}...")
         self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
 
     async def refetch_historical_data(self, symbol: str):

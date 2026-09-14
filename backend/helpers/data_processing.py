@@ -62,3 +62,29 @@ def format_large_number(num) -> str:
         return str(int(n))
     except:
         return "--"
+
+def calculate_historical_metrics(bars: list) -> tuple:
+    """
+    Calculates move5m, vol1m, and volAccel from a list of BarData.
+    Returns (move5m, vol1m, vol_accel).
+    """
+    if not bars:
+        return "--", "--", "--"
+        
+    latest = bars[-1]
+    move5m = "--"
+    vol_accel = "--"
+    
+    # 5M Move: requires at least 5 bars
+    if len(bars) >= 5:
+        old_close = bars[-5].close
+        if old_close > 0:
+            move5m = round(((latest.close - old_close) / old_close) * 100, 2)
+            
+    # Vol Accel: requires at least 2 bars
+    if len(bars) >= 2:
+        prev_vol = bars[-2].volume
+        if prev_vol > 0:
+            vol_accel = round(latest.volume / prev_vol, 1)
+            
+    return move5m, latest.volume, vol_accel

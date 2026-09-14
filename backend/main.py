@@ -50,7 +50,9 @@ scanner = IBKRScannerEngine(broadcast_callback=manager.broadcast)
 
 @app.on_event("startup")
 async def startup_event():
-    await engine.initialize()
+    default_config = IBKRConnectionConfig()
+    await engine.connect_ibkr(default_config)
+    await scanner.connect(default_config)
     
     # Continuous scanner loop to run in background independently of websocket
     async def continuous_scanner():

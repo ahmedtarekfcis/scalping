@@ -2,8 +2,8 @@ import logging
 import time
 from typing import Dict, Any, Optional
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SqueezeEngine")
+logger.setLevel(logging.WARNING)
 
 class SqueezeScoreEngine:
     def __init__(self):

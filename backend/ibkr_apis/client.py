@@ -2,6 +2,10 @@ import asyncio
 from typing import Optional, List
 import math
 import datetime
+import logging
+
+# Suppress INFO logs from ib_insync to keep console clean
+logging.getLogger('ib_insync').setLevel(logging.WARNING)
 
 try:
     from ib_insync import IB, Stock, util
@@ -38,6 +42,14 @@ try:
     orig_error = ib_insync.wrapper.Wrapper.error
 
     def patched_error(self, reqId, errorCode, errorString, contract=None):
+        # Ignore informational connection OK codes
+        if errorCode in [2104, 2106, 2108, 2158]:
+            return
+            
+        error_lower = errorString.lower()
+        if errorCode == 162 and ("scanner subscription cancelled" in error_lower or "historical data query cancelled" in error_lower or "historical market data service error message:api historical data query cancelled" in error_lower):
+            return
+            
         msg = f"[TWS] Error {errorCode}, reqId {reqId}: {errorString}"
         if contract:
             msg += f", contract: {contract}"

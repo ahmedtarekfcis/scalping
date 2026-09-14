@@ -1,14 +1,46 @@
 <template>
   <div class="scanner-table-container mono">
-    <div class="table-header">
-      <span class="col-symbol">SYMBOL</span>
-      <span class="col-move5m">5M MOVE</span>
-      <span class="col-vol1m">1M VOL</span>
-      <span class="col-volratio">VOL RATIO</span>
-      <span class="col-volaccel">VOL ACCEL</span>
-      <span class="col-specs">SPECS</span>
+    <div class="table-header-bar">
+      <div class="header-title">LIVE SCANNER (TOP 10)</div>
+      <div class="header-actions">
+        <button class="btn-columns" @click="toggleColSettings">
+          <svg class="icon" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M5 4h10v2H5V4zm0 5h10v2H5V9zm0 5h10v2H5v-2z" />
+          </svg>
+          Columns
+        </button>
+        
+        <!-- Column Settings Popover -->
+        <div v-if="showColSettings" class="col-settings-popover">
+          <div class="col-settings-header">Manage Columns</div>
+          <div class="col-list">
+            <div 
+              v-for="(col, idx) in columns" 
+              :key="col.id"
+              class="col-item"
+            >
+              <label class="col-label">
+                <input type="checkbox" v-model="col.visible" @change="saveCols" />
+                {{ col.label }}
+              </label>
+              <div class="col-movers">
+                <button @click="moveCol(idx, -1)" :disabled="idx === 0">▲</button>
+                <button @click="moveCol(idx, 1)" :disabled="idx === columns.length - 1">▼</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
+    <!-- Table Header -->
+    <div class="table-header" :style="gridStyle">
+      <span v-for="col in visibleColumns" :key="col.id" :class="['col-' + col.id, { 'calc-col': col.isCalc }]">
+        {{ col.label }}
+      </span>
+    </div>
+
+    <!-- Table Body -->
     <div class="table-body">
       <div v-if="!results || results.length === 0" class="empty-state">
         <span class="empty-icon">📡</span>
@@ -21,50 +53,92 @@
         :key="item.symbol"
         class="scan-row"
         :class="{ 'trend-up': item.trend === 'up', 'trend-down': item.trend === 'down' }"
-        :style="{ animationDelay: `${index * 0.05}s` }"
+        :style="[gridStyle, { animationDelay: `${index * 0.05}s` }]"
       >
-        <div class="col-symbol">
-          <span class="score-circle" :class="getScoreClass(item.score)" :title="'Score: ' + (item.score || 0)">
-            {{ item.score || 0 }}
-          </span>
-          <div class="symbol-info">
-            <span class="symbol-name">{{ item.symbol }}</span>
-            <span class="symbol-change" :class="getChangeClass(item.changePercent)">
-              {{ item.changePercent > 0 ? '+' : '' }}{{ item.changePercent }}%
+        <template v-for="col in visibleColumns" :key="col.id">
+          
+          <!-- SYMBOL COLUMN -->
+          <div v-if="col.id === 'symbol'" class="col-symbol">
+            <span v-if="item.isFetchingHist" class="mini-loader" style="margin-right: 4px;"></span>
+            <span v-else class="score-circle" :class="getScoreClass(item.score)" :title="'Score: ' + (item.score || 0)">
+              {{ item.score || item.rank || 0 }}
             </span>
+            <div class="symbol-info">
+              <span class="symbol-name">{{ item.symbol }}</span>
+              <span class="symbol-change" :class="getChangeClass(item.changePercent)">
+                {{ item.changePercent > 0 ? '+' : '' }}{{ item.changePercent }}%
+              </span>
+            </div>
           </div>
-        </div>
 
-        <span class="col-move5m" :class="getChangeClass(item.move5m)">
-          {{ item.move5m !== null && item.move5m !== undefined ? (item.move5m > 0 ? '+' : '') + item.move5m + '%' : '--' }}
-        </span>
+          <!-- MOVE 5M -->
+          <span v-else-if="col.id === 'move5m'" class="col-move5m" :class="getChangeClass(item.move5m)">
+            {{ item.move5m !== null && item.move5m !== undefined ? (item.move5m > 0 ? '+' : '') + item.move5m + '%' : '--' }}
+          </span>
 
-        <span class="col-vol1m">
-          {{ item.vol1m || '--' }}
-        </span>
+          <!-- VOL 1M -->
+          <span v-else-if="col.id === 'vol1m'" class="col-vol1m">
+            {{ item.vol1m || '--' }}
+          </span>
 
-        <span class="col-volratio font-semibold" :class="getRatioClass(item.volRatio)">
-          {{ item.volRatio !== null && item.volRatio !== undefined ? item.volRatio + 'x' : '--' }}
-        </span>
+          <!-- VOL RATIO -->
+          <span v-else-if="col.id === 'volratio'" class="col-volratio font-semibold" :class="getRatioClass(item.volRatio)">
+            {{ item.volRatio !== null && item.volRatio !== undefined ? item.volRatio + 'x' : '--' }}
+          </span>
 
-        <span class="col-volaccel font-semibold" :class="getRatioClass(item.volAccel)">
-          {{ item.volAccel !== null && item.volAccel !== undefined ? item.volAccel + 'x' : '--' }}
-        </span>
-        
-        <svg 
-          class="col-specs specs-icon" 
-          viewBox="0 0 20 20" 
-          fill="currentColor"
-          title="View Specs"
-          @mouseenter="showPopover($event, item)"
-          @mouseleave="hidePopover"
-        >
-          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
-        </svg>
+          <!-- VOL ACCEL -->
+          <span v-else-if="col.id === 'volaccel'" class="col-volaccel font-semibold" :class="getRatioClass(item.volAccel)">
+            {{ item.volAccel !== null && item.volAccel !== undefined ? item.volAccel + 'x' : '--' }}
+          </span>
+
+          <!-- HISTORICAL: CLOSE -->
+          <span v-else-if="col.id === 'close'" class="font-semibold text-white">
+            {{ item.close ? '$' + item.close.toFixed(2) : '--' }}
+          </span>
+
+          <!-- HISTORICAL: OPEN -->
+          <span v-else-if="col.id === 'open'" class="text-muted">
+            {{ item.open ? '$' + item.open.toFixed(2) : '--' }}
+          </span>
+
+          <!-- HISTORICAL: HIGH -->
+          <span v-else-if="col.id === 'high'" class="text-green">
+            {{ item.high ? '$' + item.high.toFixed(2) : '--' }}
+          </span>
+
+          <!-- HISTORICAL: LOW -->
+          <span v-else-if="col.id === 'low'" class="text-red">
+            {{ item.low ? '$' + item.low.toFixed(2) : '--' }}
+          </span>
+
+          <!-- HISTORICAL: VOLUME -->
+          <span v-else-if="col.id === 'volume'" class="text-white">
+            {{ formatFloat(item.volume) }}
+          </span>
+
+          <!-- HISTORICAL: VWAP -->
+          <span v-else-if="col.id === 'vwap'" class="text-yellow">
+            {{ item.vwap ? '$' + item.vwap.toFixed(2) : '--' }}
+          </span>
+
+          <!-- SPECS -->
+          <svg 
+            v-else-if="col.id === 'specs'"
+            class="col-specs specs-icon" 
+            viewBox="0 0 20 20" 
+            fill="currentColor"
+            title="View Specs"
+            @mouseenter="showPopover($event, item)"
+            @mouseleave="hidePopover"
+          >
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+          </svg>
+
+        </template>
       </div>
     </div>
 
-    <!-- Teleported Global Popover (Free from any table overflow/clipping) -->
+    <!-- Teleported Global Popover -->
     <Teleport to="body">
       <div 
         v-if="activePopoverItem" 
@@ -84,19 +158,16 @@
             <span class="row-target">Price $1.5 – 15</span>
             <span class="row-val">${{ activePopoverItem.lastPrice }}</span>
           </div>
-
           <!-- Total Volume -->
           <div class="popover-row" :class="{ 'met': activePopoverItem.specs.vol }">
             <span class="row-target">Vol &gt; 800K</span>
             <span class="row-val">{{ activePopoverItem.volume }}</span>
           </div>
-
           <!-- Relative Volume (RV) -->
           <div class="popover-row" :class="{ 'met': activePopoverItem.specs.rv }">
             <span class="row-target">Rel Vol &gt; 3.0</span>
             <span class="row-val">{{ activePopoverItem.rv ? activePopoverItem.rv : '--' }}</span>
           </div>
-
           <!-- Float -->
           <div class="popover-row" :class="{ 'met': activePopoverItem.specs.float }">
             <span class="row-target">Float &lt; 20M</span>
@@ -113,7 +184,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 
 defineProps({
   results: {
@@ -124,6 +195,74 @@ defineProps({
 
 defineEmits(['select-symbol']);
 
+// --- Column Management ---
+const defaultCols = [
+  { id: 'symbol', label: 'SYMBOL', visible: true, width: '120px' },
+  { id: 'close', label: 'CLOSE', visible: true, width: '70px' },
+  { id: 'move5m', label: '5M MOVE ✦', visible: true, width: '80px', isCalc: true },
+  { id: 'vol1m', label: '1M VOL ✦', visible: true, width: '80px', isCalc: true },
+  { id: 'volratio', label: 'VOL RATIO', visible: true, width: '90px' },
+  { id: 'volaccel', label: 'VOL ACCEL ✦', visible: true, width: '90px', isCalc: true },
+  { id: 'volume', label: 'TOT VOL', visible: false, width: '80px' },
+  { id: 'open', label: 'OPEN', visible: false, width: '70px' },
+  { id: 'high', label: 'HIGH', visible: false, width: '70px' },
+  { id: 'low', label: 'LOW', visible: false, width: '70px' },
+  { id: 'vwap', label: 'VWAP', visible: false, width: '70px' },
+  { id: 'specs', label: 'SPECS', visible: true, width: '50px' }
+];
+
+const columns = ref([...defaultCols]);
+const showColSettings = ref(false);
+
+onMounted(() => {
+  const saved = localStorage.getItem('scannerColumns');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      // Merge saved state with defaults to support new columns
+      const merged = parsed.map(p => {
+        const def = defaultCols.find(d => d.id === p.id);
+        return def ? { ...def, visible: p.visible } : null;
+      }).filter(Boolean);
+      
+      // Add any new columns that aren't in saved state
+      defaultCols.forEach(d => {
+        if (!merged.find(m => m.id === d.id)) merged.push(d);
+      });
+      
+      columns.value = merged;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+});
+
+const visibleColumns = computed(() => columns.value.filter(c => c.visible));
+const gridStyle = computed(() => {
+  return {
+    display: 'grid',
+    gridTemplateColumns: visibleColumns.value.map(c => c.width).join(' '),
+    alignItems: 'center'
+  };
+});
+
+function toggleColSettings() {
+  showColSettings.value = !showColSettings.value;
+}
+
+function saveCols() {
+  localStorage.setItem('scannerColumns', JSON.stringify(columns.value));
+}
+
+function moveCol(idx, dir) {
+  if (idx + dir < 0 || idx + dir >= columns.value.length) return;
+  const temp = columns.value[idx];
+  columns.value[idx] = columns.value[idx + dir];
+  columns.value[idx + dir] = temp;
+  saveCols();
+}
+
+// --- Popover & Formatting Logic ---
 const activePopoverItem = ref(null);
 const popoverPos = ref({ top: 0, left: 0 });
 let hideTimeout = null;
@@ -178,21 +317,6 @@ function getRatioClass(ratio) {
   return 'text-muted';
 }
 
-function getStateClass(state) {
-  if (state === 'ACTIVE') return 'badge-up';
-  if (state === 'COOLING') return 'badge-warning';
-  if (state === 'EXPIRED') return 'badge-down';
-  return 'badge-neutral';
-}
-
-function getSpecsStatusClass(specs) {
-  if (!specs) return 'status-unknown';
-  const metCount = (specs.price ? 1 : 0) + (specs.vol ? 1 : 0) + (specs.float ? 1 : 0);
-  if (metCount === 3) return 'status-all-met';
-  if (metCount > 0) return 'status-partial-met';
-  return 'status-none-met';
-}
-
 function formatFloat(val) {
   if (val === undefined || val === null || val === 0 || val === 'N/A') return 'N/A';
   const num = typeof val === 'string' ? parseFloat(val.replace(/,/g, '')) : val;
@@ -214,10 +338,130 @@ function formatFloat(val) {
   border-radius: 8px;
 }
 
-.table-header {
-  display: grid;
-  grid-template-columns: 140px 100px 100px 100px 100px 50px;
+.table-header-bar {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
+  padding: 8px 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.header-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #94a3b8;
+  letter-spacing: 1px;
+}
+
+.header-actions {
+  position: relative;
+}
+
+.btn-columns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-columns:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.btn-columns .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.col-settings-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  width: 220px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  z-index: 1000;
+  padding: 8px;
+}
+
+.col-settings-header {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #1e293b;
+}
+
+.col-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.col-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.col-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.col-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.col-movers {
+  display: flex;
+  gap: 2px;
+}
+
+.col-movers button {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-size: 10px;
+}
+
+.col-movers button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.col-movers button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.table-header {
   padding: 10px 16px 14px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   background: transparent;
@@ -230,6 +474,11 @@ function formatFloat(val) {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   line-height: 1.2;
+}
+
+.table-header span.calc-col {
+  color: #a78bfa !important; /* Distinct purple/pink for calculated columns */
+  text-shadow: 0 0 8px rgba(167, 139, 250, 0.4);
 }
 
 .table-body {
@@ -258,9 +507,6 @@ function formatFloat(val) {
 }
 
 .scan-row {
-  display: grid;
-  grid-template-columns: 140px 100px 100px 100px 100px 50px;
-  align-items: center;
   padding: 10px 12px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.015);
@@ -289,7 +535,6 @@ function formatFloat(val) {
   border-left: 2px solid #ff3b56;
 }
 
-/* Uniform font size across row data */
 .col-symbol,
 .col-move5m,
 .col-vol1m,
@@ -324,7 +569,6 @@ function formatFloat(val) {
   letter-spacing: 0.2px;
 }
 
-/* Score Circle Badge */
 .score-circle {
   display: inline-flex;
   align-items: center;
@@ -374,7 +618,6 @@ function formatFloat(val) {
   font-weight: 600;
 }
 
-/* Specs Icon (Direct SVG with half-white color) */
 .col-specs.specs-icon {
   width: 17px;
   height: 17px;
@@ -389,7 +632,6 @@ function formatFloat(val) {
   transform: scale(1.15);
 }
 
-/* Hover Popover Box (Teleported - Clean & Concise) */
 .specs-popover-teleported {
   position: fixed;
   transform: translateX(-50%);
@@ -455,109 +697,34 @@ function formatFloat(val) {
   color: #f1f5f9;
 }
 
-/* Met Criteria Highlights */
 .popover-row.met {
   background: rgba(0, 208, 132, 0.1);
   border-color: rgba(0, 208, 132, 0.35);
 }
-
-.popover-row.met .row-target {
-  color: #a7f3d0;
-}
-
-.popover-row.met .row-val {
-  color: #00ff88;
-  text-shadow: 0 0 8px rgba(0, 208, 132, 0.3);
-}
-
-.popover-no-data {
-  font-size: 12px;
-  color: #64748b;
-  text-align: center;
-  padding: 10px 0;
-}
-
-@keyframes popoverFadeIn {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -4px);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0);
-  }
-}
-
-.reason-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.badge-up {
-  background: rgba(0, 208, 132, 0.15);
-  color: #00ff88;
-  border: 1px solid rgba(0, 208, 132, 0.3);
-}
-
-.badge-down {
-  background: rgba(255, 59, 86, 0.15);
-  color: #ff3b56;
-  border: 1px solid rgba(255, 59, 86, 0.3);
-}
-
-.badge-warning {
-  background: rgba(250, 204, 21, 0.15);
-  color: #facc15;
-  border: 1px solid rgba(250, 204, 21, 0.3);
-}
-
-.badge-neutral {
-  background: rgba(148, 163, 184, 0.15);
-  color: #94a3b8;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-}
-
-.btn-trade {
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  color: var(--text-primary);
-  padding: 6px 14px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: inherit;
-}
-
-.btn-trade:hover {
-  background: #38bdf8;
-  color: #0f172a;
-  border-color: #38bdf8;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
-}
-
+.popover-row.met .row-target { color: #a7f3d0; }
+.popover-row.met .row-val { color: #00ff88; text-shadow: 0 0 8px rgba(0, 208, 132, 0.3); }
+.popover-no-data { font-size: 12px; color: #64748b; text-align: center; padding: 10px 0; }
+@keyframes popoverFadeIn { from { opacity: 0; transform: translate(-50%, -4px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .text-green { color: var(--green-bid); }
 .text-red { color: var(--red-ask); }
 .text-yellow { color: #facc15; }
-.text-glow-green { text-shadow: 0 0 10px rgba(0, 208, 132, 0.4); }
+.text-muted { color: #64748b; }
+.text-white { color: #fff; }
+.font-semibold { font-weight: 600; }
 .text-glow-red { text-shadow: 0 0 10px rgba(255, 59, 86, 0.4); }
+@keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
 
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+/* Mini Loader */
+.mini-loader {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-left-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>
