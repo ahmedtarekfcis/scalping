@@ -170,8 +170,12 @@ class QuantEngine:
         self.symbol = None
         self.state = IntelligenceState()
         
-        from squeeze_engine import SqueezeScoreEngine
+        from features.trade_signals.engine import TradeSignalEngine
+        from features.alerts.squeeze_engine import SqueezeScoreEngine
+        from features.alerts.spoofing_watcher import SpoofingWatcher
         self.squeeze_engine = SqueezeScoreEngine()
+        self.spoofing_watcher = SpoofingWatcher()
+        self.trade_signals = TradeSignalEngine()
         
         # VWAP trackers
         self.cum_vol = 0

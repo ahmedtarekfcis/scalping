@@ -10,7 +10,7 @@ except ImportError:
     IB_INSYNC_AVAILABLE = False
 
 from models import IBKRConnectionConfig
-from momentum_scanner import MomentumDetectionEngine
+from features.scanner.momentum_scanner import MomentumDetectionEngine
 
 class IBKRScannerEngine:
     def __init__(self, broadcast_callback: Callable):

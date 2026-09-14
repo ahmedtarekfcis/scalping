@@ -5,8 +5,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from models import IBKRConnectionConfig, ConnectionStatus
-from ib_client import IBKRMarketEngine
-from scanner_engine import IBKRScannerEngine
+from features.live_data.engine import LiveDataEngine
+from features.scanner.engine import IBKRScannerEngine
 
 app = FastAPI(title="TradeEdge.ai", version="1.0.0")
 
@@ -44,7 +44,7 @@ class ConnectionManager:
             self.active_connections.discard(dead)
 
 manager = ConnectionManager()
-engine = IBKRMarketEngine(broadcast_callback=manager.broadcast)
+engine = LiveDataEngine(broadcast_callback=manager.broadcast)
 scanner = IBKRScannerEngine(broadcast_callback=manager.broadcast)
 
 
