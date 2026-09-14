@@ -39,6 +39,36 @@
           </div>
         </div>
       </section>
+      <!-- Squeeze Score Metrics -->
+      <section class="intel-section" v-if="store.intelligence.surge_prediction">
+        <h4 class="section-title">SQUEEZE ENGINE</h4>
+        
+        <div class="metric-box squeeze-main">
+          <span class="label">SQUEEZE SCORE</span>
+          <span class="value" :class="getScoreClass(store.intelligence.surge_prediction.squeeze_score)">
+            {{ store.intelligence.surge_prediction.squeeze_score }}/100
+          </span>
+          <span class="classification">{{ store.intelligence.surge_prediction.classification }}</span>
+        </div>
+        
+        <div class="metric-grid">
+          <div class="metric-box">
+            <span class="label">POTENTIAL (FUEL)</span>
+            <span class="value">{{ store.intelligence.surge_prediction.squeeze_potential }}/100</span>
+          </div>
+          <div class="metric-box">
+            <span class="label">IGNITION (REAL-TIME)</span>
+            <span class="value">{{ store.intelligence.surge_prediction.squeeze_ignition }}/100</span>
+          </div>
+          <div class="metric-box">
+            <span class="label">ORDER FLOW BIAS</span>
+            <span class="value" :class="getBiasClass(store.intelligence.surge_prediction.order_flow_bias)">
+              {{ store.intelligence.surge_prediction.order_flow_bias }}
+            </span>
+          </div>
+        </div>
+      </section>
+      
     </div>
   </div>
 </template>
@@ -47,6 +77,18 @@
 import { useMarketStore } from '../stores/marketStore';
 
 const store = useMarketStore();
+
+function getScoreClass(score) {
+  if (score >= 80) return 'text-green text-glow-green';
+  if (score >= 60) return 'text-yellow';
+  return 'text-muted';
+}
+
+function getBiasClass(bias) {
+  if (bias === 'BULLISH') return 'text-green';
+  if (bias === 'BEARISH') return 'text-red';
+  return 'text-muted';
+}
 </script>
 
 <style scoped>
@@ -166,4 +208,31 @@ const store = useMarketStore();
   color: var(--text-muted) !important;
   opacity: 0.5;
 }
+
+.squeeze-main {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.squeeze-main .value {
+  font-size: 28px;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+}
+
+.classification {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+  color: #38bdf8;
+}
+
+.text-green { color: #00d084; }
+.text-red { color: #ff3b56; }
+.text-yellow { color: #facc15; }
+.text-muted { color: #64748b; }
+.text-glow-green { text-shadow: 0 0 12px rgba(0, 208, 132, 0.5); }
 </style>

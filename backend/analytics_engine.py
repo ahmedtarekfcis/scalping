@@ -97,6 +97,10 @@ class SurgePrediction(BaseModel):
     hh_hl_detail: str = ""
     # New tracking fields
     squeeze_score: int = 0
+    squeeze_potential: int = 0
+    squeeze_ignition: int = 0
+    order_flow_bias: str = "NEUTRAL"
+    classification: str = "NO SQUEEZE SETUP"
     flush_score: int = 0
     target_distance: float = 0.0
     meets_bullish_criteria: bool = False
@@ -165,6 +169,9 @@ class QuantEngine:
     def __init__(self):
         self.symbol = None
         self.state = IntelligenceState()
+        
+        from squeeze_engine import SqueezeScoreEngine
+        self.squeeze_engine = SqueezeScoreEngine()
         
         # VWAP trackers
         self.cum_vol = 0
@@ -637,52 +644,51 @@ class QuantEngine:
             
         return meets_bullish, meets_bearish
 
-    def _calculate_squeeze_score(self, buy_vol: int, sell_vol: int, tape_speed: float, block_bias: str, price_moved_up: bool, current_price: float = 0.0, nearest_ceiling=None, anomaly: Optional[OrderFlowAnomaly] = None) -> int:
-        """
-        Calculates a dedicated 0-100 SQUEEZE_SCORE for upward surging momentum.
-        """
-        score = 50
+    def _calculate_dynamic_squeeze_scores(self, buy_vol: int, sell_vol: int, tape_speed: float, block_bias: str, price_moved_up: bool, current_price: float = 0.0, nearest_ceiling=None, anomaly: Optional[OrderFlowAnomaly] = None) -> dict:
         total_vol = buy_vol + sell_vol
-        if total_vol == 0:
-            return 0
-            
-        buy_pressure_pct = int((buy_vol / total_vol) * 100)
-        score += int((buy_pressure_pct - 50) * 0.8)
+        buy_pressure_pct = (buy_vol / total_vol * 100) if total_vol > 0 else 50.0
         
-        # Block Bias & Trapped Shorts
-        if block_bias == "BUY_BLOCKS":
-            score += 20
-        elif block_bias == "SELL_BLOCKS" and price_moved_up:
-            score += 20 # Shorts are getting run over and trapped
-            
-        # Tape Velocity
-        if tape_speed > 5.0:
-            score += 25
-        elif tape_speed > 3.0:
-            score += 15
-        elif tape_speed < 1.0:
-            score -= 10
-            
-        # HOD Proximity Bonus
-        if self.state.hod and self.state.hod > 0:
-            dist_to_hod = (self.state.hod - current_price) / current_price
-            if 0 < dist_to_hod <= 0.01:
-                score += 15
-            
-        # Wall eating (aggressive buying > 50% of nearest ask wall)
-        if nearest_ceiling and buy_vol > (nearest_ceiling.size * 0.5):
-            score += 10
-            
-        # Spoofing Anomaly (Ask wall pulled)
-        if anomaly and anomaly.risk_score >= 50 and anomaly.side == "ASK" and anomaly.pattern == "LARGE_ORDER_PULL":
-            score += 15
-            
-        # Absorption penalty (Trapped under ask wall)
+        # Price Response logic (Ignition component)
+        price_resp_score = 50.0
         is_trapped_under_wall = nearest_ceiling and (nearest_ceiling.price - current_price) <= 0.05
-        if buy_vol > (total_vol * 0.6) and total_vol > 1000 and not price_moved_up:
-            score -= 50 if is_trapped_under_wall else 40
+        if buy_vol > (total_vol * 0.6) and total_vol > 1000:
+            if price_moved_up:
+                price_resp_score = 90.0 if not is_trapped_under_wall else 70.0
+            else:
+                price_resp_score = 10.0 if is_trapped_under_wall else 30.0
+        
+        # L2 Ask Depletion
+        ask_depletion = 50.0
+        if nearest_ceiling and buy_vol > (nearest_ceiling.size * 0.5):
+            ask_depletion = 85.0
             
-        return max(0, min(100, int(score)))
+        if anomaly and anomaly.risk_score >= 50 and anomaly.side == "ASK" and anomaly.pattern == "LARGE_ORDER_PULL":
+            ask_depletion = 95.0
+            
+        dist_to_hod = 5.0
+        if self.state.hod and self.state.hod > 0:
+            dist_to_hod = ((self.state.hod - current_price) / current_price) * 100
+            
+        rvol = 1.0 # default fallback
+        
+        # We don't have all SI data in the analytics engine yet, but we can pass what we have
+        fuel_data = {}
+        
+        is_10s_up, _, _ = self._evaluate_10s_trend()
+        meets_bullish, _ = self._evaluate_technical_criteria(current_price)
+        
+        ig_data = {
+            'buy_pressure_pct': buy_pressure_pct,
+            'tape_velocity': tape_speed,
+            'price_response_score': price_resp_score,
+            'ask_depletion_score': ask_depletion,
+            'hod_distance_pct': dist_to_hod,
+            'rvol': rvol,
+            'structure_score': 100.0 if is_10s_up else 0.0,
+            'alignment_score': 100.0 if meets_bullish else 0.0,
+        }
+        
+        return self.squeeze_engine.calculate_total_score(fuel_data, ig_data)
 
     def _calculate_flush_score(self, buy_vol: int, sell_vol: int, tape_speed: float, block_bias: str, price_moved_down: bool, current_price: float = 0.0, nearest_floor=None, anomaly: Optional[OrderFlowAnomaly] = None) -> int:
         """
@@ -828,6 +834,10 @@ class QuantEngine:
 
         target_price = current_price
         squeeze_score = 0
+        squeeze_potential = 0
+        squeeze_ignition = 0
+        order_flow_bias = "NEUTRAL"
+        classification = "NO SQUEEZE SETUP"
         confidence = 50
         speed = "STEADY"
         catalyst = ""
@@ -852,7 +862,28 @@ class QuantEngine:
                     speed = "EXPLOSIVE"
                     catalyst = f"BULL TRAP (Buyers Absorbed). Flush Score: {flush_score}"
             else:
-                squeeze_score = self._calculate_squeeze_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_up, current_price, nearest_ceiling, self.state.order_flow_anomaly)
+                sq_res = self._calculate_dynamic_squeeze_scores(buy_vol, sell_vol, tape_speed, block_bias, price_moved_up, current_price, nearest_ceiling, self.state.order_flow_anomaly)
+                squeeze_score = sq_res['squeeze_score']
+                squeeze_potential = sq_res['squeeze_potential']
+                squeeze_ignition = sq_res['squeeze_ignition']
+                order_flow_bias = sq_res['order_flow_bias']
+                classification = sq_res['classification']
+                
+                # Check for Alert
+                ig_data = {
+                    'buy_pressure_pct': buy_pressure_pct,
+                    'tape_velocity': tape_speed,
+                    'ask_depletion_score': 85.0 if nearest_ceiling and buy_vol > (nearest_ceiling.size * 0.5) else 50.0,
+                    'price_response_score': 90.0 if price_moved_up else 30.0,
+                    'hod_distance_pct': ((self.state.hod - current_price) / current_price * 100) if self.state.hod else 5.0,
+                    'rvol': 1.0
+                }
+                alert = self.squeeze_engine.check_for_alert(self.symbol, current_price, sq_res, ig_data)
+                if alert:
+                    # In a real system, you would emit this via a websocket or callback
+                    # For now, we will just rely on the logger in SqueezeScoreEngine
+                    pass
+                
                 flush_score_val = 0
                 
                 if not meets_bullish:
@@ -877,7 +908,13 @@ class QuantEngine:
         elif buy_pressure_pct <= 45 or block_bias == "SELL_BLOCKS":
             if price_moved_up and total_vol > 1000:
                 # Bear Trap Fake-out: Heavy selling but price is rising (Absorption by buyers)
-                squeeze_score = self._calculate_squeeze_score(buy_vol, sell_vol, tape_speed, block_bias, price_moved_up, current_price, nearest_ceiling, self.state.order_flow_anomaly)
+                sq_res = self._calculate_dynamic_squeeze_scores(buy_vol, sell_vol, tape_speed, block_bias, price_moved_up, current_price, nearest_ceiling, self.state.order_flow_anomaly)
+                squeeze_score = sq_res['squeeze_score']
+                squeeze_potential = sq_res['squeeze_potential']
+                squeeze_ignition = sq_res['squeeze_ignition']
+                order_flow_bias = sq_res['order_flow_bias']
+                classification = sq_res['classification']
+                
                 flush_score_val = 0
                 
                 if not meets_bullish:
@@ -996,6 +1033,10 @@ class QuantEngine:
             trend_status=trend_status,
             hh_hl_detail=hh_hl_detail,
             squeeze_score=squeeze_score,
+            squeeze_potential=squeeze_potential,
+            squeeze_ignition=squeeze_ignition,
+            order_flow_bias=order_flow_bias,
+            classification=classification,
             flush_score=flush_score_val,
             target_distance=abs(price_delta),
             meets_bullish_criteria=meets_bullish,

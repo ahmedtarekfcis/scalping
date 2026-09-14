@@ -356,24 +356,33 @@ class IBKRMarketEngine:
         if not ticker or ticker.contract.symbol != self.active_symbol:
             return
 
-        bids = [
-            DepthLevel(
-                price=round(row.price, 2),
-                size=int(row.size),
-                marketMaker=row.marketMaker or random.choice(self.mmids),
-                ordersCount=getattr(row, 'orderCount', 1) or 1
-            )
-            for row in ticker.domBids[:100]
-        ]
-        asks = [
-            DepthLevel(
-                price=round(row.price, 2),
-                size=int(row.size),
-                marketMaker=row.marketMaker or random.choice(self.mmids),
-                ordersCount=getattr(row, 'orderCount', 1) or 1
-            )
-            for row in ticker.domAsks[:100]
-        ]
+        def aggregate_dom(dom_list, is_bid):
+            aggregated = {}
+            for row in dom_list[:100]:
+                rounded_price = round(row.price, 2)
+                if rounded_price not in aggregated:
+                    aggregated[rounded_price] = {
+                        "size": 0,
+                        "ordersCount": 0,
+                        "marketMaker": row.marketMaker or random.choice(self.mmids)
+                    }
+                aggregated[rounded_price]["size"] += int(row.size)
+                aggregated[rounded_price]["ordersCount"] += getattr(row, 'orderCount', 1) or 1
+                
+            result = [
+                DepthLevel(
+                    price=p,
+                    size=data["size"],
+                    marketMaker=data["marketMaker"],
+                    ordersCount=data["ordersCount"]
+                )
+                for p, data in aggregated.items()
+            ]
+            result.sort(key=lambda x: x.price, reverse=is_bid)
+            return result
+
+        bids = aggregate_dom(ticker.domBids, True)
+        asks = aggregate_dom(ticker.domAsks, False)
 
         book = OrderBook(
             symbol=self.active_symbol,
