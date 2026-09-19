@@ -813,7 +813,7 @@ input[type="file"] {
   height: 100vh;
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
-  z-index: 40;
+  z-index: 1040;
   opacity: 0;
   visibility: hidden;
   transition: all 0.3s ease;
@@ -830,7 +830,7 @@ input[type="file"] {
   right: -75%;
   width: 75%;
   height: 100vh;
-  z-index: 50;
+  z-index: 1050;
   border-radius: 24px 0 0 24px;
   display: flex;
   flex-direction: column;
@@ -976,6 +976,7 @@ input[type="file"] {
 
 .executions-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.8rem;
 }
@@ -984,7 +985,14 @@ input[type="file"] {
   padding: 3px 6px;
   text-align: left;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.executions-table td:nth-child(1) { width: 30%; }
+.executions-table td:nth-child(2) { width: 30%; }
+.executions-table td:nth-child(3) { width: 40%; }
 
 .executions-table th {
   color: var(--text-muted);
