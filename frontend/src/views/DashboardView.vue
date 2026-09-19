@@ -12,22 +12,6 @@
           </div>
         </div>
       </section>
-
-      <!-- Right Column: MTF Confluence & Price Action/Momentum (Collapsible Slide Right) -->
-      <section class="grid-col right-panel-col" :class="{ 'collapsed': isMtfCollapsed }">
-        <button 
-          v-if="isMtfCollapsed"
-          class="mtf-toggle-tab" 
-          @click="isMtfCollapsed = false" 
-          title="Expand MTF Confluence"
-        >
-          <span class="toggle-arrow">◀</span>
-          <span class="collapsed-title mono">MTF CONFLUENCE</span>
-        </button>
-        <div class="mtf-inner" v-show="!isMtfCollapsed">
-          <MTFConfluence @collapse-mtf="isMtfCollapsed = true" />
-        </div>
-      </section>
     </template>
     
     <!-- No Ticker State -->
@@ -43,14 +27,11 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
 import { useMarketStore } from '../stores/marketStore';
 import OrderBook from '../components/OrderBook.vue';
 import TimeAndSales from '../components/TimeAndSales.vue';
-import MTFConfluence from '../components/MTFConfluence.vue';
 
 const store = useMarketStore();
-const isMtfCollapsed = ref(false);
 </script>
 
 <style scoped>
@@ -83,126 +64,18 @@ const isMtfCollapsed = ref(false);
 }
 
 .book-container {
-  flex: 1.5;
+  flex: 1.45;
   min-width: 320px;
 }
 
 .tape-container {
-  flex: 1.1;
+  flex: 1.15;
   min-width: 320px;
-}
-
-.right-panel-col {
-  position: relative;
-  flex: 0.8;
-  min-width: 280px;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  transition: flex 0.3s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.right-panel-col.collapsed {
-  flex: 0 0 32px !important;
-  min-width: 32px !important;
-  max-width: 32px;
-}
-
-.mtf-inner {
-  height: 100%;
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.mtf-toggle-tab {
-  position: absolute;
-  top: 8px;
-  left: -12px;
-  z-index: 40;
-  width: 24px;
-  height: 38px;
-  background: #162032;
-  border: 1px solid #38bdf8;
-  border-radius: 6px;
-  color: #38bdf8;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
-  transition: all 0.2s ease;
-  padding: 0;
-}
-
-.right-panel-col.collapsed .mtf-toggle-tab {
-  left: 4px;
-  top: 8px;
-  width: 24px;
-  height: 100%;
-  max-height: 150px;
-  border-radius: 6px;
-  background: rgba(22, 32, 50, 0.95);
-}
-
-.mtf-toggle-tab:hover {
-  background: #38bdf8;
-  color: #0c121e;
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
-}
-
-.toggle-arrow {
-  font-size: 11px;
-  line-height: 1;
-}
-
-.collapsed-title {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  transform: rotate(180deg);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1px;
-  margin-top: 10px;
-  white-space: nowrap;
 }
 
 @media (max-width: 1024px) {
   .dashboard-grid {
     flex-direction: column;
-  }
-
-  .right-panel-col.collapsed {
-    flex: 0 0 38px !important;
-    min-height: 38px !important;
-    max-height: 38px;
-    min-width: 100% !important;
-    max-width: 100%;
-  }
-
-  .right-panel-col.collapsed .mtf-toggle-tab {
-    position: static;
-    width: 100%;
-    height: 100%;
-    max-height: 100%;
-    border-radius: 6px;
-    background: rgba(22, 32, 50, 0.95);
-    flex-direction: row;
-    gap: 8px;
-  }
-
-  .right-panel-col.collapsed .collapsed-title {
-    writing-mode: horizontal-tb;
-    transform: none;
-    margin-top: 0;
-    font-size: 12px;
-  }
-
-  .right-panel-col.collapsed .toggle-arrow {
-    transform: rotate(90deg);
-    display: inline-block;
   }
 }
 

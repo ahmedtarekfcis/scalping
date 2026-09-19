@@ -42,18 +42,20 @@ try:
     orig_error = ib_insync.wrapper.Wrapper.error
 
     def patched_error(self, reqId, errorCode, errorString, contract=None):
-        # Ignore informational connection OK codes
-        if errorCode in [2104, 2106, 2108, 2158]:
-            return
-            
-        error_lower = errorString.lower()
-        if errorCode == 162 and ("scanner subscription cancelled" in error_lower or "historical data query cancelled" in error_lower or "historical market data service error message:api historical data query cancelled" in error_lower):
-            return
-            
-        msg = f"[TWS] Error {errorCode}, reqId {reqId}: {errorString}"
-        if contract:
-            msg += f", contract: {contract}"
-        print(msg)
+        should_print = True
+        # Ignore informational connection OK codes and No Security Definition (200) which spams during scanning
+        if errorCode in [200, 2104, 2106, 2108, 2158]:
+            should_print = False
+        else:
+            error_lower = errorString.lower()
+            if errorCode == 162 and ("scanner subscription cancelled" in error_lower or "historical data query cancelled" in error_lower or "historical market data service error message:api historical data query cancelled" in error_lower):
+                should_print = False
+                
+        if should_print:
+            msg = f"[TWS] Error {errorCode}, reqId {reqId}: {errorString}"
+            if contract:
+                msg += f", contract: {contract}"
+            print(msg)
         
         import logging
         logger = logging.getLogger('ib_insync.wrapper')
@@ -120,8 +122,11 @@ class IBKRClient:
             return None
         contract = Stock(symbol, 'SMART', 'USD')
         try:
-            await self.ib.qualifyContractsAsync(contract)
+            await asyncio.wait_for(self.ib.qualifyContractsAsync(contract), timeout=5.0)
             return contract
+        except asyncio.TimeoutError:
+            self.last_error = f"Qualify timeout for {symbol}"
+            return None
         except Exception as e:
             self.last_error = f"Qualify error for {symbol}: {e}"
             return None
@@ -135,9 +140,9 @@ class IBKRClient:
             return self.ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=is_smart)
         return None
 
-    def cancel_mkt_depth(self, contract: Stock):
+    def cancel_mkt_depth(self, contract: Stock, is_smart: bool = True):
         if self.ib and self.ib.isConnected():
-            self.ib.cancelMktDepth(contract)
+            self.ib.cancelMktDepth(contract, isSmartDepth=is_smart)
 
     def req_mkt_data(self, contract: Stock, generic_tick_list: str = '233'):
         if self.ib and self.ib.isConnected():
@@ -151,6 +156,10 @@ class IBKRClient:
     def req_tick_by_tick_data(self, contract: Stock, tick_type: str = 'AllLast'):
         if self.ib and self.ib.isConnected():
             self.ib.reqTickByTickData(contract, tick_type, 0, False)
+
+    def cancel_tick_by_tick_data(self, contract: Stock, tick_type: str = 'AllLast'):
+        if self.ib and self.ib.isConnected():
+            self.ib.cancelTickByTickData(contract, tick_type)
 
     async def req_historical_data_safe(self, contract, durationStr, barSizeSetting, whatToShow, useRTH, formatDate, keepUpToDate=False):
         """

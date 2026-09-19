@@ -3,7 +3,7 @@
     <!-- Removed redundant connection dot, handled in HeaderBar -->
 
     <!-- Top Nav / Ticker Bar -->
-    <HeaderBar />
+    <HeaderBar v-if="showHeader" />
 
     <div v-if="store.isLoading" class="global-loader-overlay">
       <div class="spinner"></div>
@@ -23,11 +23,15 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue';
+import { onMounted, computed } from 'vue';
+import { useRoute } from 'vue-router';
 import { useMarketStore } from './stores/marketStore';
 import HeaderBar from './components/HeaderBar.vue';
 
 const store = useMarketStore();
+const route = useRoute();
+
+const showHeader = computed(() => route.path !== '/trade-stats');
 
 onMounted(() => {
   store.initWebSocket();

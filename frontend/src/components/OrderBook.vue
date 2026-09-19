@@ -1,20 +1,30 @@
 <template>
   <div class="orderbook-panel glass-panel">
+    <!-- Imbalance & Spoofing Top Row -->
+    <div class="intel-top-bar mono">
+      <div class="spoofing-col">
+        <span class="spoofing-text" :class="{ 'opacity-0': !spoofingMsg }">
+          ⚠️ {{ spoofingMsg || 'SPOOFING PLACEHOLDER' }}
+        </span>
+      </div>
+      <div class="delta-col">
+        <span class="delta-val" :class="deltaImbalance > 0 ? 'text-green' : (deltaImbalance < 0 ? 'text-red' : 'text-muted')">
+          {{ deltaImbalance > 0 ? '+' : (deltaImbalance < 0 ? '-' : '') }}{{ Math.abs(deltaImbalance).toLocaleString(undefined, { maximumFractionDigits: 0 }) }}
+        </span>
+      </div>
+    </div>
+
     <!-- Dual Columns (Bids Left, Asks Right) - No Level 2 Title, 100 Rows Max -->
     <div class="book-container mono">
       <!-- BIDS TABLE -->
       <div class="book-half bids-half">
-        <div class="table-header bid-th">
-          <span class="col-size">SIZE</span>
-          <span class="col-price">BID</span>
-        </div>
 
         <div class="table-body">
           <div 
             v-for="(row, idx) in store.displayedBids" 
             :key="'bid-' + row.price + '-' + idx"
             class="book-row bid-row"
-            :class="{ 'row-floor-highlight': row.isFloor, 'big-wall': row.size >= 10000 }"
+            :class="{ 'big-wall': row.size >= 10000 }"
           >
             <!-- Inline Cumulative Depth Fill Bar (Right aligned) -->
             <div 
@@ -26,12 +36,9 @@
               <span 
                 class="col-size" 
                 :class="[
-                  row.isFloor ? 'text-yellow-glow font-bold' : (row.size >= 10000 ? 'text-gold' : '')
+                  (row.size >= 10000 ? 'text-gold' : '')
                 ]"
               >
-                <span v-if="row.isFloor" class="wall-floor-chip floor-chip" :title="`Floor detected: ${row.relativeStrength}x average of first 100 rows`">
-                  FLOOR
-                </span>
                 {{ formatNum(row.size) }}
               </span>
               <span class="col-price text-green font-bold">{{ row.price.toFixed(2) }}</span>
@@ -46,17 +53,13 @@
 
       <!-- ASKS TABLE -->
       <div class="book-half asks-half">
-        <div class="table-header ask-th">
-          <span class="col-price">ASK</span>
-          <span class="col-size">SIZE</span>
-        </div>
 
         <div class="table-body">
           <div 
             v-for="(row, idx) in store.displayedAsks" 
             :key="'ask-' + row.price + '-' + idx"
             class="book-row ask-row"
-            :class="{ 'row-wall-highlight': row.isWall, 'big-wall': row.size >= 10000 }"
+            :class="{ 'big-wall': row.size >= 10000 }"
           >
             <!-- Inline Cumulative Depth Fill Bar (Left aligned) -->
             <div 
@@ -69,12 +72,9 @@
               <span 
                 class="col-size" 
                 :class="[
-                  row.isWall ? 'text-yellow-glow font-bold' : (row.size >= 10000 ? 'text-gold' : '')
+                  (row.size >= 10000 ? 'text-gold' : '')
                 ]"
               >
-                <span v-if="row.isWall" class="wall-floor-chip wall-chip" :title="`Wall detected: ${row.relativeStrength}x average of first 100 rows`">
-                  WALL
-                </span>
                 {{ formatNum(row.size) }}
               </span>
             </div>
@@ -90,9 +90,56 @@
 </template>
 
 <script setup>
+import { ref, computed, watch } from 'vue';
 import { useMarketStore } from '../stores/marketStore';
 
 const store = useMarketStore();
+
+const spoofingMsg = ref('');
+let spoofingTimeout = null;
+let prevBids = [];
+let prevAsks = [];
+
+const deltaImbalance = computed(() => {
+  let bidVal = 0;
+  for (const b of store.displayedBids) {
+    bidVal += (b.size * b.price);
+  }
+  let askVal = 0;
+  for (const a of store.displayedAsks) {
+    askVal += (a.size * a.price);
+  }
+  return bidVal - askVal;
+});
+
+function detectSpoofing(oldBook, newBook, side) {
+  if (!oldBook || oldBook.length === 0) return;
+  
+  for (const oldLevel of oldBook) {
+    if (oldLevel.size >= 10000) {
+      const newLevel = newBook.find(l => l.price === oldLevel.price);
+      const newSize = newLevel ? newLevel.size : 0;
+      
+      if (oldLevel.size - newSize >= 9000) {
+        spoofingMsg.value = `${side} WALL PULLED AT $${oldLevel.price.toFixed(2)}`;
+        if (spoofingTimeout) clearTimeout(spoofingTimeout);
+        spoofingTimeout = setTimeout(() => {
+          spoofingMsg.value = '';
+        }, 4000);
+      }
+    }
+  }
+}
+
+watch(() => store.displayedBids, (newBids) => {
+  detectSpoofing(prevBids, newBids, 'BUY');
+  prevBids = newBids.map(b => ({ price: b.price, size: b.size }));
+}, { deep: true });
+
+watch(() => store.displayedAsks, (newAsks) => {
+  detectSpoofing(prevAsks, newAsks, 'SELL');
+  prevAsks = newAsks.map(a => ({ price: a.price, size: a.size }));
+}, { deep: true });
 
 function formatLots(num) {
   const lotSize = 100;
@@ -105,6 +152,16 @@ function formatNum(num) {
   if (num === undefined || num === null || isNaN(num)) return '0';
   return formatLots(num);
 }
+
+function formatSizeK(size) {
+  if (!size) return '';
+  if (size >= 1000) {
+    const kVal = (size / 1000).toFixed(1);
+    return kVal.endsWith('.0') ? kVal.replace('.0', '') + 'k' : kVal + 'k';
+  }
+  return size.toString();
+}
+
 </script>
 
 <style scoped>
@@ -116,6 +173,79 @@ function formatNum(num) {
   border-radius: 8px;
   background: rgba(13, 17, 23, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: border 0.2s ease, box-shadow 0.2s ease;
+}
+
+.intel-top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: linear-gradient(180deg, #161f30 0%, #0c121e 100%);
+  border-bottom: 2px solid #38bdf8;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.spoofing-col {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.spoofing-text {
+  font-size: 11px;
+  font-weight: 800;
+  color: #facc15;
+  text-transform: uppercase;
+}
+
+.delta-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.delta-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.delta-val {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.opacity-0 {
+  opacity: 0;
+}
+
+.border-squeeze {
+  border: 1px solid #00ff88 !important;
+  box-shadow: 0 0 15px rgba(0, 255, 136, 0.2);
+}
+
+.border-flush {
+  border: 1px solid #ff3b56 !important;
+  box-shadow: 0 0 15px rgba(255, 59, 86, 0.2);
+}
+
+.border-spoof {
+  border: 1px solid #facc15 !important;
+  box-shadow: 0 0 15px rgba(250, 204, 21, 0.2);
+}
+
+.spoofing-msg-area {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: #facc15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+  padding: 6px;
+  border-bottom: 1px solid rgba(250, 204, 21, 0.2);
 }
 
 .book-container {
@@ -137,27 +267,7 @@ function formatNum(num) {
   border-right: 1px solid var(--border-color);
 }
 
-.table-header {
-  display: flex;
-  padding: 8px 16px;
-  height: 42px;
-  box-sizing: border-box;
-  font-size: 12.5px;
-  font-weight: 800;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-subtle);
-  background: rgba(10, 13, 20, 0.75);
-  flex-shrink: 0;
-  align-items: center;
-}
 
-.bid-th {
-  justify-content: space-between;
-}
-
-.ask-th {
-  justify-content: space-between;
-}
 
 .table-body {
   flex: 1;

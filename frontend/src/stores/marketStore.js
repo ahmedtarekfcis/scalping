@@ -39,26 +39,7 @@ export const useMarketStore = defineStore('market', {
     maxTapeLength: 30,
     tapeMinSize: 0, // Default no size filter
     
-    // Market Intelligence
-    intelligence: {
-      vwap: null,
-      ema_9: null,
-      ema_21: null,
-      ema_200: null,
-      hod: null,
-      lod: null,
-      mtf_levels: [],
-      bid_walls: [],
-      ask_walls: [],
-      tape_speed: 0,
-      aggressive_buy_vol: 0,
-      aggressive_sell_vol: 0,
-      ai_evidence: "Awaiting sufficient market data to form a conclusion.",
-      signal: null,
-      trade_ideas: [],
-      surge_prediction: null,
-      order_flow_anomaly: null
-    },
+    // No intelligence state needed
     
     // Scanner
     scannerResults: [],
@@ -87,67 +68,7 @@ export const useMarketStore = defineStore('market', {
     bestBid: (state) => (state.bids && state.bids.length > 0 ? state.bids[0] : null),
     bestAsk: (state) => (state.asks && state.asks.length > 0 ? state.asks[0] : null),
     lastTrade: (state) => (state.tape && state.tape.length > 0 ? state.tape[0] : null),
-    surgePrediction: (state) => {
-      const intel = state.intelligence || {};
-      const sp = intel.surge_prediction;
-      
-      const isMissingCriteria = !intel.vwap || !intel.ema_9 || !intel.ema_21 || !intel.ema_200;
 
-      if (isMissingCriteria) {
-        return {
-          ...(sp || {}),
-          direction: 'WAITING_10S_UPTREND',
-          catalyst: 'waiting to fulfill critrias',
-          target_price: state.lastPrice,
-          current_price: state.lastPrice,
-          price_delta: 0,
-          price_delta_pct: 0,
-          confidence: 50,
-          speed: 'STEADY',
-          meets_bullish_criteria: false,
-          meets_bearish_criteria: false
-        };
-      }
-
-      if (sp) {
-        // Strictly enforce ALL bullish criteria (all green/ABOVE)
-        if (!sp.meets_bullish_criteria) {
-          return {
-            ...sp,
-            direction: 'WAITING_10S_UPTREND',
-            catalyst: 'waiting to fulfill critrias'
-          };
-        }
-
-        // If actively surging, always pass through
-        if (sp.direction === 'SURGING_UP' || sp.direction === 'POTENTIAL_SQUEEZE' || sp.direction === 'MOMENTUM_SURGE') {
-          return sp;
-        }
-        
-        if (!sp.is_10s_uptrend) {
-          return {
-            ...sp,
-            direction: 'WAITING_10S_UPTREND',
-            catalyst: 'waiting uptrend'
-          };
-        }
-        
-        return sp; // Default pass-through if criteria met but not surging
-      }
-      
-      return {
-        direction: 'CONSOLIDATING',
-        target_price: state.lastPrice,
-        current_price: state.lastPrice,
-        price_delta: 0,
-        price_delta_pct: 0,
-        confidence: 50,
-        speed: 'STEADY',
-        catalyst: 'Awaiting sufficient market data to form a conclusion.',
-        meets_bullish_criteria: false,
-        meets_bearish_criteria: false
-      };
-    }
   },
 
   actions: {
@@ -231,10 +152,6 @@ export const useMarketStore = defineStore('market', {
           this.processTapeTick(msg.data);
           break;
 
-        case 'INTELLIGENCE_UPDATE':
-          this.intelligence = { ...this.intelligence, ...msg.data };
-          break;
-
         case 'SCANNER_UPDATE':
           this.scannerResults = msg.data || [];
           this.isScanning = false;
@@ -243,11 +160,6 @@ export const useMarketStore = defineStore('market', {
         case 'ERROR':
           console.error("Backend Error:", msg.data.message);
           this.isLoading = false;
-          this.intelligence = {
-            ...this.intelligence,
-            ai_evidence: `ERROR: ${msg.data.message}`,
-            surge_prediction: null
-          };
           break;
       }
     },
@@ -392,25 +304,6 @@ export const useMarketStore = defineStore('market', {
       this.high = null;
       this.low = null;
       this.open = null;
-      this.intelligence = {
-        vwap: null,
-        ema_9: null,
-        ema_21: null,
-        ema_200: null,
-        hod: null,
-        lod: null,
-        mtf_levels: [],
-        bid_walls: [],
-        ask_walls: [],
-        tape_speed: 0,
-        aggressive_buy_vol: 0,
-        aggressive_sell_vol: 0,
-        ai_evidence: "Awaiting sufficient market data to form a conclusion.",
-        signal: null,
-        trade_ideas: [],
-        surge_prediction: null,
-        order_flow_anomaly: null
-      };
 
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ action: 'SUBSCRIBE', symbol: sym }));
@@ -423,11 +316,7 @@ export const useMarketStore = defineStore('market', {
       }
     },
 
-    refetchMtf() {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN && this.symbol) {
-        this.ws.send(JSON.stringify({ action: 'REFETCH_MTF', symbol: this.symbol }));
-      }
-    },
+
 
     scanMarket(isBackground = false) {
       if (!isBackground) {

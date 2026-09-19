@@ -149,9 +149,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "REFETCH_CRITERIA":
                     symbol = msg.get("symbol", "TSLA")
                     await engine.refetch_historical_data(symbol)
-                elif action == "REFETCH_MTF":
-                    symbol = msg.get("symbol", "TSLA")
-                    await engine.refetch_mtf_data(symbol)
+
                 elif action == "SCAN":
                     asyncio.create_task(scanner.scan_market())
                 elif action == "SYNC_WEBULL":

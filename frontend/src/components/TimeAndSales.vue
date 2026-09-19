@@ -1,76 +1,8 @@
 <template>
   <div class="tape-panel glass-panel">
-    <!-- REAL-TIME SURGE / DUMP PREDICTION BOX -->
-    <div 
-      class="surge-prediction-box mono"
-      :class="[
-        (surgePred.direction === 'WAITING_10S_UPTREND') ? 'surge-box-waiting' : (
-          surgePred.direction === 'SURGING_UP' || surgePred.direction === 'POTENTIAL_SQUEEZE' || surgePred.direction === 'MOMENTUM_SURGE' ? 'surge-box-bull' : (
-            surgePred.direction === 'DUMPING_DOWN' || surgePred.direction === 'POTENTIAL_FLUSH' ? 'surge-box-bear' : 'surge-box-neutral'
-          )
-        )
-      ]"
-    >
-      <!-- When in waiting state, ONLY display the message -->
-      <template v-if="surgePred.direction === 'WAITING_10S_UPTREND'">
-        <div class="waiting-only-text">
-          {{ surgePred.catalyst }}
-        </div>
-      </template>
-
-      <!-- Otherwise, show the full prediction box -->
-      <template v-else>
-        <div class="surge-top-row">
-          <div class="surge-badge-wrap">
-            <span class="surge-badge" :class="surgeBadgeClass">
-              <span class="pulse-dot"></span>
-              <template v-if="surgePred.direction === 'SURGING_UP'">🚀 SURGING UP</template>
-              <template v-else-if="surgePred.direction === 'DUMPING_DOWN'">🔻 DUMPING DOWN</template>
-              <template v-else>⚖️ RANGE / ABSORBING</template>
-            </span>
-          </div>
-
-          <div class="surge-confidence">
-            <span class="conf-label">CONF:</span>
-            <span class="conf-val font-bold">{{ surgePred.confidence }}%</span>
-          </div>
-        </div>
-
-        <div class="surge-target-row">
-          <div class="target-title-wrap">
-            <span class="target-lead">TARGET:</span>
-            <span class="target-price font-bold" :class="surgePriceClass">
-              ${{ surgePred.target_price ? surgePred.target_price.toFixed(2) : '--.--' }}
-            </span>
-          </div>
-          <div class="target-delta font-bold" :class="surgePriceClass">
-            <span v-if="surgePred.direction === 'SURGING_UP'">+${{ surgePred.price_delta ? surgePred.price_delta.toFixed(2) : '0.00' }} (+{{ surgePred.price_delta_pct }}%)</span>
-            <span v-else-if="surgePred.direction === 'DUMPING_DOWN'">${{ surgePred.price_delta ? surgePred.price_delta.toFixed(2) : '0.00' }} ({{ surgePred.price_delta_pct }}%)</span>
-            <span v-else class="text-muted">CORRIDOR</span>
-          </div>
-        </div>
-
-        <!-- L2 Floor vs Ask Wall Pressure Line -->
-        <div class="surge-levels-bar">
-          <div class="level-sub-tag">
-            <span class="lvl-label">FLOOR:</span>
-            <span class="lvl-val text-green font-bold">${{ surgePred.floor_price ? Number(surgePred.floor_price).toFixed(2) : '--' }}</span>
-          </div>
-          <div class="level-meter-wrap" :title="`Tape Buy (${surgePred.buy_pressure_pct}%) vs Sell Flow Ratio`">
-            <div class="level-meter-fill" :style="{ width: `${surgePred.buy_pressure_pct || 50}%` }"></div>
-          </div>
-          <div class="level-sub-tag">
-            <span class="lvl-label">WALL:</span>
-            <span class="lvl-val text-red font-bold">${{ surgePred.wall_price ? Number(surgePred.wall_price).toFixed(2) : '--' }}</span>
-          </div>
-        </div>
-      </template>
-    </div>
-
     <!-- IBKR-Style Frozen Pinned 'Current' NBBO & Last Trade Row -->
     <div class="pinned-current-bar mono">
       <div class="pinned-pod bid-pod">
-        <span class="pod-label">BID</span>
         <span class="pod-val text-green font-bold">
           {{ bestBid ? bestBid.price.toFixed(2) : '--.--' }}
         </span>
@@ -79,23 +11,26 @@
         </span>
       </div>
 
-      <div class="pinned-pod last-pod" :class="lastTradeSideClass">
-        <div class="last-tag-wrap">
-          <span class="pod-label">LAST</span>
-          <span v-if="store.spread > 0" class="spread-chip">SPR ${{ store.spread.toFixed(2) }}</span>
+      <div class="pinned-pod last-pod last-pod-row" :class="lastTradeSideClass">
+        <div class="last-price-col">
+          <span class="pod-val font-bold" :class="lastTradePriceClass">
+            {{ lastTrade ? lastTrade.price.toFixed(2) : (store.lastPrice ? store.lastPrice.toFixed(2) : '--.--') }}
+          </span>
         </div>
-        <span class="pod-val font-bold" :class="lastTradePriceClass">
-          {{ lastTrade ? lastTrade.price.toFixed(2) : (store.lastPrice ? store.lastPrice.toFixed(2) : '--.--') }}
-        </span>
-        <span class="pod-size font-bold" :class="lastTradePriceClass">
-          <span v-if="lastTrade && (lastTrade.size >= 5000 || (lastTrade.isBlockTrade && lastTrade.size >= 4000))" class="block-mini-badge" title="Whale Block: ≥5,000 shares">⚡</span>
-          {{ lastTrade ? formatNum(lastTrade.size) : '-' }}
-          <span v-if="lastTrade && lastTrade.orderCount > 1" class="agg-chip">({{ lastTrade.orderCount }}x)</span>
-        </span>
+        <div class="spread-col">
+          <span :class="{'opacity-0': !(store.spread > 0)}" class="spread-chip">[{{ store.spread > 0 ? Math.round(store.spread * 100) : 0 }}]</span>
+        </div>
+        <div class="size-col">
+          <span class="pod-size font-bold" :class="lastTradePriceClass">
+            {{ lastTrade ? formatNum(lastTrade.size) : '-' }}
+          </span>
+        </div>
+        <div class="agg-col">
+          <span :class="{'opacity-0': !(lastTrade && lastTrade.orderCount > 1)}" class="agg-chip">({{ lastTrade && lastTrade.orderCount > 1 ? lastTrade.orderCount : 2 }}x)</span>
+        </div>
       </div>
 
       <div class="pinned-pod ask-pod">
-        <span class="pod-label">ASK</span>
         <span class="pod-val text-red font-bold">
           {{ bestAsk ? bestAsk.price.toFixed(2) : '--.--' }}
         </span>
@@ -199,41 +134,6 @@ const store = useMarketStore();
 const bestBid = computed(() => store.bestBid);
 const bestAsk = computed(() => store.bestAsk);
 const lastTrade = computed(() => store.lastTrade);
-const surgePred = computed(() => store.surgePrediction || {
-  direction: 'CONSOLIDATING',
-  target_price: 0,
-  price_delta: 0,
-  price_delta_pct: 0,
-  confidence: 50,
-  speed: 'NORMAL',
-  catalyst: 'Calculating momentum & wall balance...',
-  floor_price: 0,
-  wall_price: 0,
-  buy_pressure_pct: 50,
-  is_10s_uptrend: false,
-  trend_status: 'WAITING_10S_UPTREND',
-  hh_hl_detail: 'Initializing 10s micro-structure...'
-});
-
-const surgeBadgeClass = computed(() => {
-  if (surgePred.value.direction === 'SURGING_UP') return 'badge-surge-bull';
-  if (surgePred.value.direction === 'WAITING_10S_UPTREND') return 'badge-surge-waiting';
-  if (surgePred.value.direction === 'DUMPING_DOWN') return 'badge-surge-bear';
-  return 'badge-surge-neutral';
-});
-
-const surgePriceClass = computed(() => {
-  if (surgePred.value.direction === 'SURGING_UP') return 'text-green text-glow-green';
-  if (surgePred.value.direction === 'WAITING_10S_UPTREND') return 'text-amber text-glow-amber';
-  if (surgePred.value.direction === 'DUMPING_DOWN') return 'text-red text-glow-red';
-  return 'text-primary';
-});
-
-const surgeSpeedClass = computed(() => {
-  if (surgePred.value.speed === 'EXPLOSIVE') return 'speed-explosive';
-  if (surgePred.value.speed === 'FAST') return 'speed-fast';
-  return 'speed-steady';
-});
 
 const filteredTape = computed(() => {
   const minThreshold = (store.tapeMinSize !== undefined && store.tapeMinSize !== null && store.tapeMinSize !== '')
@@ -435,12 +335,11 @@ function formatNum(num) {
 /* IBKR-STYLE FROZEN PINNED TOP ROW (NBBO & LAST TRADE)      */
 /* ======================================================== */
 .pinned-current-bar {
-  display: grid;
-  grid-template-columns: 1fr 1.35fr 1fr;
-  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
   gap: 8px;
-  padding: 8px 12px;
-  min-height: 70px;
+  padding: 4px 8px;
   box-sizing: border-box;
   background: linear-gradient(180deg, #161f30 0%, #0c121e 100%);
   border-bottom: 2px solid #38bdf8;
@@ -449,15 +348,62 @@ function formatNum(num) {
   flex-shrink: 0;
 }
 
+.bid-pod, .ask-pod {
+  width: 25%;
+}
+
+.last-pod {
+  width: 48%;
+}
+
 .pinned-pod {
   display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: center;
+  align-items: center;
   padding: 5px 8px;
   border-radius: 5px;
   background: rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.last-pod-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.last-pod-row .pod-val {
+  font-size: 14px;
+}
+
+.last-pod-row .pod-size {
+  font-size: 11px;
+}
+
+.opacity-0 {
+  opacity: 0;
+}
+
+.last-price-col {
+  width: 42px;
+  text-align: right;
+}
+
+.spread-col {
+  width: 24px;
+  text-align: left;
+}
+
+.size-col {
+  width: 32px;
+  text-align: right;
+}
+
+.agg-col {
+  width: 30px;
+  text-align: left;
 }
 
 .pod-label {
@@ -506,18 +452,10 @@ function formatNum(num) {
   background: rgba(250, 204, 21, 0.18);
 }
 
-.last-tag-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 
 .spread-chip {
-  font-size: 10px;
-  background: rgba(56, 189, 248, 0.18);
-  color: #38bdf8;
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-size: 11px;
+  color: #facc15;
   font-weight: 800;
 }
 
@@ -527,263 +465,11 @@ function formatNum(num) {
 }
 
 .agg-chip {
-  font-size: 11px;
-  color: #38bdf8;
-  margin-left: 3px;
-}
-
-/* ======================================================== */
-/* SURGE & DUMP PREDICTION COLORED BOX IN TAPE CARD         */
-/* ======================================================== */
-.surge-prediction-box {
-  margin: 8px 10px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
-  transition: all 0.25s ease;
-  flex-shrink: 0;
-  min-height: 108px;
-  height: 108px;
-  box-sizing: border-box;
-}
-
-/* Bullish Surge Box */
-.surge-box-bull {
-  background: linear-gradient(135deg, rgba(0, 208, 132, 0.20) 0%, rgba(6, 182, 212, 0.15) 100%);
-  border: 1px solid rgba(0, 208, 132, 0.5);
-  box-shadow: 0 0 16px rgba(0, 208, 132, 0.2);
-}
-
-/* Waiting for 10s Uptrend Confirmation Box */
-.surge-box-waiting {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%);
-  border: 1px solid rgba(245, 158, 11, 0.55);
-  box-shadow: 0 0 16px rgba(245, 158, 11, 0.18);
-}
-
-/* Bearish Dump Box */
-.surge-box-bear {
-  background: linear-gradient(135deg, rgba(255, 59, 86, 0.20) 0%, rgba(225, 29, 72, 0.15) 100%);
-  border: 1px solid rgba(255, 59, 86, 0.5);
-  box-shadow: 0 0 16px rgba(255, 59, 86, 0.2);
-}
-
-/* Neutral Consolidating Box */
-.surge-box-neutral {
-  background: linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.9) 100%);
-  border: 1px solid rgba(56, 189, 248, 0.3);
-}
-
-.surge-top-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.surge-badge-wrap {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.surge-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  font-weight: 900;
-  padding: 3px 8px;
-  border-radius: 4px;
-  letter-spacing: 0.5px;
-}
-
-.badge-surge-bull {
-  background: #00d084;
-  color: #052e16;
-}
-
-.badge-surge-waiting {
-  background: #f59e0b;
-  color: #451a03;
-}
-
-.badge-surge-bear {
-  background: #ff3b56;
-  color: #450a0a;
-}
-
-.badge-surge-neutral {
-  background: rgba(56, 189, 248, 0.2);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.35);
-}
-
-.pulse-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: blink 0.8s infinite alternate;
-}
-
-.surge-speed-tag {
   font-size: 10px;
-  font-weight: 800;
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-
-.speed-explosive {
-  background: #facc15;
-  color: #713f12;
-  font-weight: 900;
-  animation: pulse 1s infinite;
-}
-
-.speed-fast {
-  background: rgba(56, 189, 248, 0.22);
   color: #38bdf8;
 }
 
-.speed-steady {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-muted);
-}
 
-.surge-confidence {
-  font-size: 11px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.conf-label {
-  color: var(--text-muted);
-}
-
-.conf-val {
-  color: var(--text-primary);
-  font-size: 12px;
-}
-
-.surge-target-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 2px 0;
-}
-
-.target-title-wrap {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.target-lead {
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--text-secondary);
-}
-
-.target-price {
-  font-size: 20px;
-  font-weight: 900;
-  letter-spacing: 0.5px;
-}
-
-.target-delta {
-  font-size: 12.5px;
-}
-
-.text-amber {
-  color: #fbbf24;
-}
-
-.text-glow-amber {
-  text-shadow: 0 0 10px rgba(245, 158, 11, 0.55);
-}
-
-.text-glow-green {
-  text-shadow: 0 0 10px rgba(0, 208, 132, 0.5);
-}
-
-.text-glow-red {
-  text-shadow: 0 0 10px rgba(255, 59, 86, 0.5);
-}
-
-.surge-driver-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  line-height: 1.35;
-  color: var(--text-primary);
-  background: rgba(0, 0, 0, 0.35);
-  padding: 4px 8px;
-  border-radius: 4px;
-}
-
-.driver-row-waiting {
-  background: rgba(245, 158, 11, 0.15);
-  border: 1px solid rgba(245, 158, 11, 0.25);
-  color: #fef3c7;
-}
-
-.driver-icon {
-  color: #facc15;
-  font-size: 12px;
-}
-
-.driver-text {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-}
-
-.surge-levels-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  padding-top: 2px;
-}
-
-.level-sub-tag {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.lvl-label {
-  color: var(--text-muted);
-  font-size: 10.5px;
-  font-weight: 700;
-}
-
-.lvl-val {
-  font-size: 12px;
-}
-
-.level-meter-wrap {
-  flex: 1;
-  height: 6px;
-  background: rgba(255, 59, 86, 0.45);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.level-meter-fill {
-  height: 100%;
-  background: var(--green-bid);
-  border-radius: 3px;
-  transition: width 0.25s ease;
-}
 
 /* ======================================================== */
 /* TAPE TABLE HEADER & STREAMING LIST                       */

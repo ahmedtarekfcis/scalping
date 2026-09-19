@@ -24,6 +24,7 @@ class IBKRScannerEngine:
         self.last_fetch_time = {}
         self.cached_hist = {}
         self.is_fetching = {}
+        self.subscribed_symbols = {}
 
     async def connect(self, config: IBKRConnectionConfig):
         self.config = config
@@ -57,20 +58,36 @@ class IBKRScannerEngine:
         now = time.time()
         contracts_to_fetch = []
         
+        current_symbols = {item.contractDetails.contract.symbol for item in scan_results}
+        
+        # Unsubscribe from symbols that dropped off the scanner list
+        for sym in list(self.subscribed_symbols.keys()):
+            if sym not in current_symbols:
+                contract = self.subscribed_symbols[sym]
+                try:
+                    self.scanner_ib.cancelMktData(contract)
+                except Exception:
+                    pass
+                del self.subscribed_symbols[sym]
+        
         # 1. Identify what needs fetching
         for item in scan_results:
             contract = item.contractDetails.contract
             symbol = contract.symbol
+            
+            # Subscribe to market data for daily vol, high, prev close
+            if symbol not in self.subscribed_symbols:
+                self.subscribed_symbols[symbol] = contract
+                try:
+                    self.scanner_ib.reqMktData(contract, '', False, False)
+                except Exception as e:
+                    pass
+
             needs_fetch = symbol not in self.cached_hist or (now - self.last_fetch_time.get(symbol, 0) > 60)
             
             if needs_fetch and not self.is_fetching.get(symbol, False):
                 self.is_fetching[symbol] = True
                 contracts_to_fetch.append(contract)
-                # Subscribe to market data for daily vol, high, prev close
-                try:
-                    self.scanner_ib.reqMktData(contract, '', False, False)
-                except Exception as e:
-                    pass
             
         # 2. Fetch missing data sequentially in the background
         if contracts_to_fetch:

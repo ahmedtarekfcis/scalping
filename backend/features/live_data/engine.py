@@ -4,7 +4,6 @@ import math
 from typing import Callable, Dict, Optional
 
 from models import OrderBook, TapeTick, ConnectionStatus, IBKRConnectionConfig
-from analytics_engine import QuantEngine
 from ibkr_apis.client import IBKRClient
 from helpers.data_processing import aggregate_dom, aggregate_tape_tick
 
@@ -25,7 +24,6 @@ class LiveDataEngine:
         self.contract = None
         self._last_tape_tick: Optional[TapeTick] = None
 
-        self.quant_engine = QuantEngine()
         self.mmids = ["ISLD", "ARCA", "EDGA", "EDGX", "BATS", "NSDQ", "DRCT", "MEMX", "IEX", "NYS"]
 
     async def initialize(self):
@@ -57,7 +55,7 @@ class LiveDataEngine:
         try:
             if getattr(self, 'depth_ticker', None):
                 self.depth_ticker.updateEvent -= self._on_depth_update
-                self.client.cancel_mkt_depth(self.contract)
+                self.client.cancel_mkt_depth(self.depth_ticker.contract)
         except Exception:
             pass
 
@@ -72,7 +70,8 @@ class LiveDataEngine:
         try:
             if getattr(self, 'mkt_ticker', None):
                 self.mkt_ticker.updateEvent -= self._on_mkt_data_update
-                self.client.cancel_mkt_data(self.contract)
+                self.client.cancel_mkt_data(self.mkt_ticker.contract)
+                self.client.cancel_tick_by_tick_data(self.mkt_ticker.contract)
             if self.client.ib:
                 self.client.ib.pendingTickersEvent -= self._on_tick_by_tick
         except Exception:
@@ -89,16 +88,30 @@ class LiveDataEngine:
     async def subscribe_symbol(self, symbol: str):
         print(f"\n[LIVE DATA] Subscribing to symbol: {symbol}")
         symbol = symbol.upper().strip()
-        self.active_symbol = symbol
-        self.quant_engine.reset(symbol)
 
         if not self.client.is_connected:
             print("[LIVE DATA] Error: IBKR Client is not connected! Cannot subscribe.")
             return
 
         try:
+            # Cancel depth
+            if getattr(self, 'depth_ticker', None):
+                self.depth_ticker.updateEvent -= self._on_depth_update
+                self.client.cancel_mkt_depth(self.depth_ticker.contract)
+                self.depth_ticker = None
+            
+            # Cancel tape
+            if getattr(self, 'mkt_ticker', None):
+                self.mkt_ticker.updateEvent -= self._on_mkt_data_update
+                self.client.cancel_mkt_data(self.mkt_ticker.contract)
+                self.client.cancel_tick_by_tick_data(self.mkt_ticker.contract)
+                self.mkt_ticker = None
+
+            if self.client.ib:
+                self.client.ib.pendingTickersEvent -= self._on_tick_by_tick
+
+            # Cancel historical
             if getattr(self, 'live_bars_1m', None):
-                self.live_bars_1m.updateEvent -= self._on_1m_bar_update
                 self.client.cancel_historical_data(self.live_bars_1m)
                 self.live_bars_1m = None
 
@@ -106,6 +119,8 @@ class LiveDataEngine:
                 self.hist_fetch_task.cancel()
         except Exception as e:
             print(f"[LIVE DATA] Error clearing previous subscriptions: {e}")
+
+        self.active_symbol = symbol
 
         print(f"[LIVE DATA] Qualifying contract for {symbol}...")
         self.contract = await self.client.qualify_contract(symbol)
@@ -120,77 +135,6 @@ class LiveDataEngine:
         await self.subscribe_l2(symbol)
         await self.subscribe_tape(symbol)
 
-        print(f"[LIVE DATA] Starting historical data fetch task for {symbol}...")
-        self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
-
-    async def refetch_historical_data(self, symbol: str):
-        if self.hist_fetch_task and not self.hist_fetch_task.done():
-            self.hist_fetch_task.cancel()
-        
-        self.quant_engine.state.ema_9 = None
-        self.quant_engine.state.ema_21 = None
-        self.quant_engine.state.ema_200 = None
-        self.quant_engine.state.vwap = None
-        
-        await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
-        self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
-
-    async def refetch_mtf_data(self, symbol: str):
-        if self.hist_fetch_task and not self.hist_fetch_task.done():
-            self.hist_fetch_task.cancel()
-        
-        self.quant_engine.state.mtf_levels = []
-        
-        await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
-        self.hist_fetch_task = asyncio.create_task(self._fetch_historical_data_with_retry(symbol))
-
-    async def _fetch_historical_data_with_retry(self, symbol: str):
-        if not self.client.is_connected or not self.contract:
-            return
-            
-        try:
-            bars_1m = await self.client.req_historical_data_safe(
-                self.contract, durationStr='3 D',
-                barSizeSetting='1 min', whatToShow='TRADES', useRTH=False, formatDate=1,
-                keepUpToDate=True
-            )
-            
-            bars_4h = await self.client.req_historical_data_safe(
-                self.contract, durationStr='1 M',
-                barSizeSetting='4 hours', whatToShow='TRADES', useRTH=False, formatDate=1,
-                keepUpToDate=False
-            )
-            
-            if bars_1m and bars_4h:
-                def convert(bars_list):
-                    return [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_list]
-                    
-                self.quant_engine.process_historical_data('1m', convert(bars_1m), recalc_snr=True)
-                self.quant_engine.process_historical_data('4h', convert(bars_4h), recalc_snr=True)
-                
-                self.live_bars_1m = bars_1m
-                self.live_bars_1m.updateEvent += self._on_1m_bar_update
-                
-                await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
-                
-        except Exception as e:
-            print(f"[HIST] Error fetching historical data for {symbol}: {e}")
-
-    def _on_1m_bar_update(self, bars, hasNewBar: bool):
-        if getattr(bars, 'contract', None) and bars.contract.symbol != self.active_symbol:
-            return
-            
-        def convert(bars_list):
-            return [{"date": str(b.date), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume} for b in bars_list]
-            
-        self.quant_engine.process_historical_data('1m', convert(bars), recalc_snr=hasNewBar)
-        
-        if self.broadcast_callback:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()}))
-            except Exception:
-                pass
 
     def _on_depth_update(self, ticker):
         if not ticker or ticker.contract.symbol != self.active_symbol:
@@ -208,11 +152,6 @@ class LiveDataEngine:
         self.current_book[self.active_symbol] = book
         asyncio.create_task(self.broadcast_callback({"type": "L2_UPDATE", "data": book.dict()}))
         
-        bids_dict = [{"price": b.price, "size": b.size} for b in bids]
-        asks_dict = [{"price": a.price, "size": a.size} for a in asks]
-        self.quant_engine.on_l2_update(book.lastPrice or 0.0, bids_dict, asks_dict)
-        asyncio.create_task(self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()}))
-
         self._last_tape_tick = None
 
     async def _process_new_tick(self, new_tick: TapeTick):
@@ -224,8 +163,6 @@ class LiveDataEngine:
             self._last_tape_tick = current_tick
 
         await self.broadcast_callback({"type": "TAPE_TICK", "data": current_tick.dict()})
-        self.quant_engine.on_tape_tick(new_tick.price, new_tick.size, new_tick.side)
-        await self.broadcast_callback({"type": "INTELLIGENCE_UPDATE", "data": self.quant_engine.get_payload()})
 
     def _on_mkt_data_update(self, ticker):
         if not ticker or getattr(ticker.contract, 'symbol', None) != self.active_symbol:
