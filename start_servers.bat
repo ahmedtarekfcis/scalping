@@ -1,0 +1,3 @@
+@echo off
+echo Starting Backend and Frontend in Windows Terminal...
+wt -w 0 nt -d "%~dp0backend" cmd /k "python main.py" ; nt -d "%~dp0frontend" cmd /k "npm run dev"

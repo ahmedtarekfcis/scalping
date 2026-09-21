@@ -11,22 +11,26 @@
         </span>
       </div>
 
-      <div class="pinned-pod last-pod last-pod-row" :class="lastTradeSideClass">
-        <div class="last-price-col">
-          <span class="pod-val font-bold" :class="lastTradePriceClass">
-            {{ lastTrade ? lastTrade.price.toFixed(2) : (store.lastPrice ? store.lastPrice.toFixed(2) : '--.--') }}
-          </span>
+      <div class="pinned-pod last-pod" :class="lastTradeSideClass">
+        <div class="last-pod-row">
+          <div class="last-price-col">
+            <span class="pod-val font-bold" :class="lastTradePriceClass">
+              {{ lastTrade ? lastTrade.price.toFixed(2) : (store.lastPrice ? store.lastPrice.toFixed(2) : '--.--') }}
+            </span>
+          </div>
+          <div class="spread-col">
+            <span :class="{'opacity-0': !(store.spread > 0)}" class="spread-chip">[{{ store.spread > 0 ? Math.round(store.spread * 100) : 0 }}]</span>
+          </div>
         </div>
-        <div class="spread-col">
-          <span :class="{'opacity-0': !(store.spread > 0)}" class="spread-chip">[{{ store.spread > 0 ? Math.round(store.spread * 100) : 0 }}]</span>
-        </div>
-        <div class="size-col">
-          <span class="pod-size font-bold" :class="lastTradePriceClass">
-            {{ lastTrade ? formatNum(lastTrade.size) : '-' }}
-          </span>
-        </div>
-        <div class="agg-col">
-          <span :class="{'opacity-0': !(lastTrade && lastTrade.orderCount > 1)}" class="agg-chip">({{ lastTrade && lastTrade.orderCount > 1 ? lastTrade.orderCount : 2 }}x)</span>
+        <div class="last-pod-row">
+          <div class="size-col">
+            <span class="pod-size font-bold" :class="lastTradePriceClass">
+              {{ lastTrade ? formatNum(lastTrade.size) : '-' }}
+            </span>
+          </div>
+          <div class="agg-col">
+            <span :class="{'opacity-0': !(lastTrade && lastTrade.orderCount > 1)}" class="agg-chip">[{{ lastTrade && lastTrade.orderCount > 1 ? lastTrade.orderCount : 2 }}x]</span>
+          </div>
         </div>
       </div>
 
@@ -368,10 +372,13 @@ function formatNum(num) {
 }
 
 .last-pod-row {
+  display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: baseline;
   justify-content: center;
   gap: 4px;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
 }
 
 .last-pod-row .pod-val {
@@ -379,7 +386,7 @@ function formatNum(num) {
 }
 
 .last-pod-row .pod-size {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .opacity-0 {
@@ -387,23 +394,23 @@ function formatNum(num) {
 }
 
 .last-price-col {
-  width: 42px;
-  text-align: right;
+  width: 45px;
+  text-align: center;
 }
 
 .spread-col {
-  width: 24px;
-  text-align: left;
+  width: 30px;
+  text-align: center;
 }
 
 .size-col {
-  width: 32px;
-  text-align: right;
+  width: 38px;
+  text-align: center;
 }
 
 .agg-col {
-  width: 30px;
-  text-align: left;
+  width: 36px;
+  text-align: center;
 }
 
 .pod-label {
@@ -454,7 +461,7 @@ function formatNum(num) {
 
 
 .spread-chip {
-  font-size: 11px;
+  font-size: 14px;
   color: #facc15;
   font-weight: 800;
 }
@@ -465,8 +472,9 @@ function formatNum(num) {
 }
 
 .agg-chip {
-  font-size: 10px;
+  font-size: 12px;
   color: #38bdf8;
+  font-weight: 800;
 }
 
 
