@@ -10,7 +10,7 @@ WEBULL_SEARCH_Y = 120
 CPRO_SEARCH_X = 160
 CPRO_SEARCH_Y = 125
 
-def sync_ticker_at_location(x: int, y: int):
+def sync_ticker_at_location(x: int, y: int, wait_before_enter: float = 1.0):
     try:
         # 1. Move mouse to the absolute coordinates
         pyautogui.moveTo(x, y)
@@ -30,8 +30,8 @@ def sync_ticker_at_location(x: int, y: int):
         # 5. Paste the ticker
         pyautogui.hotkey('ctrl', 'v')
         
-        # 6. Wait 1s then enter
-        time.sleep(1.0)
+        # 6. Wait then enter
+        time.sleep(wait_before_enter)
         pyautogui.press('enter')
         time.sleep(0.1)
     except Exception as e:
@@ -44,7 +44,7 @@ def sync_all_platforms(symbol: str):
         time.sleep(0.1)
         
         # Sync Webull
-        sync_ticker_at_location(WEBULL_SEARCH_X, WEBULL_SEARCH_Y)
+        sync_ticker_at_location(WEBULL_SEARCH_X, WEBULL_SEARCH_Y, wait_before_enter=0.2)
         
         # Sync CPRO
         sync_ticker_at_location(CPRO_SEARCH_X, CPRO_SEARCH_Y)

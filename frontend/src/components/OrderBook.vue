@@ -24,7 +24,7 @@
             v-for="(row, idx) in store.displayedBids" 
             :key="'bid-' + row.price + '-' + idx"
             class="book-row bid-row"
-            :class="{ 'big-wall': row.size >= 10000 }"
+            :class="{ 'big-wall': row.size >= 10000, 'row-floor-highlight': row.isFloor }"
           >
             <!-- Inline Cumulative Depth Fill Bar (Right aligned) -->
             <div 
@@ -59,7 +59,7 @@
             v-for="(row, idx) in store.displayedAsks" 
             :key="'ask-' + row.price + '-' + idx"
             class="book-row ask-row"
-            :class="{ 'big-wall': row.size >= 10000 }"
+            :class="{ 'big-wall': row.size >= 10000, 'row-wall-highlight': row.isWall }"
           >
             <!-- Inline Cumulative Depth Fill Bar (Left aligned) -->
             <div 

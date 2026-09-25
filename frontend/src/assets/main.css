@@ -12,12 +12,12 @@
   --green-bid: #00d084;
   --green-bid-glow: rgba(0, 208, 132, 0.35);
   --green-bid-bg: rgba(0, 208, 132, 0.12);
-  --green-bid-bar: rgba(0, 208, 132, 0.22);
+  --green-bid-bar: rgba(0, 208, 132, 0.45);
 
   --red-ask: #ff3b56;
   --red-ask-glow: rgba(255, 59, 86, 0.35);
   --red-ask-bg: rgba(255, 59, 86, 0.12);
-  --red-ask-bar: rgba(255, 59, 86, 0.22);
+  --red-ask-bar: rgba(255, 59, 86, 0.45);
 
   --gold-block: #ffb800;
   --gold-glow: rgba(255, 184, 0, 0.4);

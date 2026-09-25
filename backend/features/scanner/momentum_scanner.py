@@ -159,41 +159,155 @@ class MomentumDetectionEngine:
         
         return metrics
 
-    def _calculate_score(self, metrics: dict) -> int:
+    def _calculate_score(
+        self,
+        ret_1m: float,
+        ret_2m: float,
+        rvol_1m: float,
+        vol_accel: float,
+        range_expansion: float,
+        is_hh: bool,
+        price_to_vwap_pct: float,
+        vwap_rising: bool,
+        price_to_ema9_pct: float,
+        ema9_rising: bool,
+        trend_5m_bullish: bool,
+        trend_15m_bullish: bool,
+        near_hod_pmh: bool,
+        room_to_resistance_pct: float,
+    ) -> int:
+        """
+        Main Momentum Score.
+
+        Measures how strong the stock's CURRENT momentum is.
+        It is NOT a probability percentage and does NOT determine entry timing.
+
+        Max Score = 100
+
+        1M Price Velocity / Acceleration : 25
+        1M RVOL / Volume Strength        : 20
+        Volume Acceleration              : 15
+        Range Expansion                  : 10
+        5M Trend / Structure             : 10
+        15M Trend                        : 5
+        HH Bullish Structure             : 5
+        VWAP + 9EMA Alignment            : 5
+        HOD/PMH + Room                   : 5
+        """
+
         score = 0
-        cfg = self.config
-        
-        # Velocity (0-25)
-        ret_max = max(metrics.get('ret_1m', 0), metrics.get('ret_2m', 0) / 1.5)
-        vel_score = min(25, max(0, int(ret_max * 10))) 
-        score += vel_score
-        
-        # RVOL (0-25)
-        rvol = metrics.get('rvol_1m', 1.0)
-        rvol_score = min(25, int((rvol - 1) * 5)) if rvol > 1 else 0
-        score += rvol_score
-        
-        # Vol Accel (0-15)
-        vaccel = metrics.get('vol_accel', 1.0)
-        vaccel_score = min(15, int((vaccel - 1) * 5)) if vaccel > 1 else 0
-        score += vaccel_score
-        
-        # Range Expansion (0-15)
-        rexp = metrics.get('range_expansion', 1.0)
-        rexp_score = min(15, int((rexp - 1) * 10)) if rexp > 1 else 0
-        score += rexp_score
-        
-        # Structure HH (0-10)
-        if metrics.get('is_hh', False):
+
+        # ---------------------------------------------------------
+        # 1. 1M PRICE VELOCITY / ACCELERATION (0-25)
+        # ---------------------------------------------------------
+        if isinstance(ret_1m, (int, float)) and isinstance(ret_2m, (int, float)):
+            ret_max = max(ret_1m, ret_2m / 1.5)
+
+            vel_score = min(
+                25,
+                max(0, int(ret_max * 10))
+            )
+
+            score += vel_score
+
+        # ---------------------------------------------------------
+        # 2. 1M RVOL / VOLUME STRENGTH (0-20)
+        # ---------------------------------------------------------
+        if isinstance(rvol_1m, (int, float)) and rvol_1m > 1:
+            rvol_score = min(
+                20,
+                max(0, int((rvol_1m - 1) * 4))
+            )
+
+            score += rvol_score
+
+        # ---------------------------------------------------------
+        # 3. VOLUME ACCELERATION (0-15)
+        # ---------------------------------------------------------
+        if isinstance(vol_accel, (int, float)) and vol_accel > 1:
+            vaccel_score = min(
+                15,
+                max(0, int((vol_accel - 1) * 5))
+            )
+
+            score += vaccel_score
+
+        # ---------------------------------------------------------
+        # 4. RANGE EXPANSION (0-10)
+        # ---------------------------------------------------------
+        if isinstance(range_expansion, (int, float)) and range_expansion > 1:
+            range_score = min(
+                10,
+                max(0, int((range_expansion - 1) * 10))
+            )
+
+            score += range_score
+
+        # ---------------------------------------------------------
+        # 5. 5M BULLISH TREND / STRUCTURE (0-10)
+        # ---------------------------------------------------------
+        if trend_5m_bullish:
             score += 10
-            
-        # VWAP / EMA (0-10)
-        if metrics.get('price_to_vwap_pct', 0) > 0 and metrics.get('vwap_rising', False):
+
+        # ---------------------------------------------------------
+        # 6. 15M BULLISH TREND (0-5)
+        # ---------------------------------------------------------
+        if trend_15m_bullish:
             score += 5
-        if metrics.get('price_to_ema9_pct', 0) > 0 and metrics.get('ema9_rising', False):
+
+        # ---------------------------------------------------------
+        # 7. HIGHER HIGH / BULLISH STRUCTURE (0-5)
+        # ---------------------------------------------------------
+        if is_hh:
             score += 5
-            
-        return min(100, max(0, score))
+
+        # ---------------------------------------------------------
+        # 8. VWAP + 9 EMA ALIGNMENT (0-5)
+        # ---------------------------------------------------------
+        if (
+            isinstance(price_to_vwap_pct, (int, float))
+            and price_to_vwap_pct > 0
+            and vwap_rising
+        ):
+            score += 2.5
+
+        if (
+            isinstance(price_to_ema9_pct, (int, float))
+            and price_to_ema9_pct > 0
+            and ema9_rising
+        ):
+            score += 2.5
+
+        # ---------------------------------------------------------
+        # 9. HOD / PMH + ROOM TO RESISTANCE (0-5)
+        # ---------------------------------------------------------
+        if near_hod_pmh:
+
+            # Plenty of room before meaningful resistance
+            if (
+                isinstance(room_to_resistance_pct, (int, float))
+                and room_to_resistance_pct >= 2.0
+            ):
+                score += 5
+
+            # Some room
+            elif (
+                isinstance(room_to_resistance_pct, (int, float))
+                and room_to_resistance_pct >= 1.0
+            ):
+                score += 3
+
+            # Very close to resistance
+            elif (
+                isinstance(room_to_resistance_pct, (int, float))
+                and room_to_resistance_pct > 0
+            ):
+                score += 1
+
+        # ---------------------------------------------------------
+        # FINAL SCORE
+        # ---------------------------------------------------------
+        return min(100, max(0, int(round(score))))
 
     def evaluate_symbol(self, symbol: str, current_price: float, current_vol: float, daily_gain: float, new_bars: List[Dict]) -> dict:
         tracker = self.get_tracker(symbol)
@@ -207,7 +321,22 @@ class MomentumDetectionEngine:
         if not metrics:
             return {"state": tracker.state.value, "reason": f"Gathering data... | +{daily_gain:.1f}% Day", "score": 0, "metrics": {}}
             
-        tracker.momentum_score = self._calculate_score(metrics)
+        tracker.momentum_score = self._calculate_score(
+            ret_1m=metrics.get('ret_1m', 0),
+            ret_2m=metrics.get('ret_2m', 0),
+            rvol_1m=metrics.get('rvol_1m', 1.0),
+            vol_accel=metrics.get('vol_accel', 1.0),
+            range_expansion=metrics.get('range_expansion', 1.0),
+            is_hh=metrics.get('is_hh', False),
+            price_to_vwap_pct=metrics.get('price_to_vwap_pct', 0),
+            vwap_rising=metrics.get('vwap_rising', False),
+            price_to_ema9_pct=metrics.get('price_to_ema9_pct', 0),
+            ema9_rising=metrics.get('ema9_rising', False),
+            trend_5m_bullish=metrics.get('trend_5m_bullish', False),
+            trend_15m_bullish=metrics.get('trend_15m_bullish', False),
+            near_hod_pmh=metrics.get('near_hod_pmh', False),
+            room_to_resistance_pct=metrics.get('room_to_resistance_pct', 0.0)
+        )
         
         def build_active_reason():
             return f"ACTIVE MOMENTUM | +{metrics['ret_1m']:.1f}% 1m | RVOL {metrics['rvol_1m']:.1f}x | Range {metrics['range_expansion']:.1f}x | {'Above VWAP' if metrics['price_to_vwap_pct']>0 else 'Below VWAP'} | {'New HOD' if metrics['is_hh'] else 'Inside Range'}"

@@ -1,5 +1,6 @@
 import asyncio
 import time
+import math
 from typing import Callable, Optional
 
 try:
@@ -25,6 +26,41 @@ class IBKRScannerEngine:
         self.cached_hist = {}
         self.is_fetching = {}
         self.subscribed_symbols = {}
+
+    def calculate_score(self, m5: float, m1: float, va: float) -> int:
+        """
+        Fast general scanner ranking.
+        Measures current momentum/activity only.
+        Does NOT represent probability of continuation.
+        
+        Max Score = 100
+        - 5M price momentum:       25
+        - 1M price momentum:       30
+        - Volume/RVOL strength:    25
+        - Volume acceleration:     20
+        """
+
+        score = 0
+
+        # 5M Price Momentum (0-25)
+        if isinstance(m5, (int, float)) and m5 > 0:
+            score += min(25, int(m5 * 7.14))
+
+        # 1M Price Momentum (0-30)
+        if isinstance(m1, (int, float)) and m1 > 0:
+            score += min(30, int(m1 * 20))
+
+        # Volume / RVOL Strength (0-25)
+        if isinstance(va, (int, float)) and va > 1:
+            score += min(25, int((va - 1) * 5))
+
+        # Volume Acceleration (0-20)
+        if isinstance(va, (int, float)) and va > 1:
+            score += min(20, int((va - 1) * 4))
+
+        return min(100, max(0, score))
+
+
 
     async def connect(self, config: IBKRConnectionConfig):
         self.config = config
@@ -70,20 +106,31 @@ class IBKRScannerEngine:
                     pass
                 del self.subscribed_symbols[sym]
         
-        # 1. Identify what needs fetching
+        # 1. Identify what needs fetching and subscribe to market data
+        contracts_to_qualify = [
+            item.contractDetails.contract
+            for item in scan_results
+            if item.contractDetails.contract.symbol not in self.subscribed_symbols
+        ]
+        if contracts_to_qualify:
+            try:
+                await self.scanner_ib.qualifyContractsAsync(*contracts_to_qualify)
+            except Exception as e:
+                print(f"Scanner qualify error: {e}")
+
         for item in scan_results:
             contract = item.contractDetails.contract
             symbol = contract.symbol
             
-            # Subscribe to market data for daily vol, high, prev close
+            # Subscribe to market data with tick 233 (RTVolume) and 165 (Misc Stats) for volume, high, prev close
             if symbol not in self.subscribed_symbols:
                 self.subscribed_symbols[symbol] = contract
                 try:
-                    self.scanner_ib.reqMktData(contract, '', False, False)
+                    self.scanner_ib.reqMktData(contract, '165,233', False, False)
                 except Exception as e:
-                    pass
+                    print(f"Scanner reqMktData error for {symbol}: {e}")
 
-            needs_fetch = symbol not in self.cached_hist or (now - self.last_fetch_time.get(symbol, 0) > 60)
+            needs_fetch = symbol not in self.cached_hist or (now - self.last_fetch_time.get(symbol, 0) > 10)
             
             if needs_fetch and not self.is_fetching.get(symbol, False):
                 self.is_fetching[symbol] = True
@@ -135,35 +182,37 @@ class IBKRScannerEngine:
             daily_vol = "--"
             
             if ticker:
-                if ticker.volume and ticker.volume > 0:
-                    daily_vol = ticker.volume
+                vol = getattr(ticker, 'volume', None)
+                if vol is not None and not math.isnan(vol) and vol > 0:
+                    daily_vol = int(vol)
+                elif hasattr(ticker, 'rtVolume') and ticker.rtVolume:
+                    # rtVolume is formatted as: price;size;time;total_vol;vwap;single_trade
+                    try:
+                        rt_parts = str(ticker.rtVolume).split(';')
+                        if len(rt_parts) >= 4 and float(rt_parts[3]) > 0:
+                            daily_vol = int(float(rt_parts[3]))
+                    except Exception:
+                        pass
                 
                 # Gap % = (Open - PrevClose) / PrevClose
-                if ticker.close and ticker.close > 0 and ticker.open and ticker.open > 0:
+                if ticker.close and not math.isnan(ticker.close) and ticker.close > 0 and ticker.open and not math.isnan(ticker.open) and ticker.open > 0:
                     gap_pct = round(((ticker.open - ticker.close) / ticker.close) * 100, 2)
                     
                 # HOD Room = (High - Price) / Price
                 price = ticker.marketPrice()
-                if not price or price != price: # NaN check
+                if not price or math.isnan(price): # NaN check
                     price = hist_data.get("price", 0)
                     
-                if ticker.high and ticker.high > 0 and price > 0:
+                if ticker.high and not math.isnan(ticker.high) and ticker.high > 0 and price > 0:
                     hod_room = round(((ticker.high - price) / price) * 100, 2)
             
             # Filter condition: must have a valid move5m (meaning it has recent active candles)
             if hist_data.get("move5m") != "--":
-                score = 0
                 m5 = hist_data.get("move5m", 0)
                 m1 = hist_data.get("mom1m", 0)
                 va = hist_data.get("volAccel", 0)
                 
-                if isinstance(m5, (int, float)) and m5 > 0:
-                    score += min(35, int(m5 * 10))
-                if isinstance(m1, (int, float)) and m1 > 0:
-                    score += min(35, int(m1 * 20))
-                if isinstance(va, (int, float)) and va > 1:
-                    score += min(30, int((va - 1) * 10))
-                score = min(100, max(0, score))
+                score = self.calculate_score(m5, m1, va)
 
                 b_item = {
                     "symbol": sym,
