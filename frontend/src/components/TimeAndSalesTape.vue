@@ -26,11 +26,8 @@ function formatSize(val) {
 
     <!-- Table Header -->
     <div class="table-head mono">
-      <span class="th-time">TIME</span>
-      <span class="th-price">PRICE</span>
       <span class="th-size">SIZE</span>
-      <span class="th-side">SIDE</span>
-      <span class="th-ex">EX</span>
+      <span class="th-price">PRICE</span>
     </div>
 
     <!-- Live Fast Virtualized / Rolling Tick Stream -->
@@ -45,7 +42,10 @@ function formatSize(val) {
             { 'row-block': tick.isBlockTrade }
           ]"
         >
-          <span class="td-time text-muted">{{ tick.time }}</span>
+          <span :class="['td-size font-bold', { 'color-gold-glow': tick.isBlockTrade }]">
+            <span v-if="tick.isBlockTrade" class="block-badge" title="Block Order (>1k shares)">⚡</span>
+            {{ formatSize(tick.size) }}
+          </span>
           
           <span 
             :class="[
@@ -55,24 +55,6 @@ function formatSize(val) {
           >
             ${{ tick.price.toFixed(2) }}
           </span>
-
-          <span :class="['td-size font-bold', { 'color-gold-glow': tick.isBlockTrade }]">
-            {{ formatSize(tick.size) }}
-            <span v-if="tick.isBlockTrade" class="block-badge" title="Block Order (>1k shares)">⚡</span>
-          </span>
-
-          <span class="td-side">
-            <span 
-              :class="[
-                'side-badge',
-                tick.side === 'BUY' ? 'badge-buy' : tick.side === 'SELL' ? 'badge-sell' : 'badge-mid'
-              ]"
-            >
-              {{ tick.side === 'BUY' ? 'ASK' : tick.side === 'SELL' ? 'BID' : 'MID' }}
-            </span>
-          </span>
-
-          <span class="td-ex text-muted">{{ tick.exchange }}</span>
         </div>
       </transition-group>
 
@@ -127,21 +109,18 @@ function formatSize(val) {
 
 .table-head {
   display: grid;
-  grid-template-columns: 80px 1fr 1fr 50px 55px;
+  grid-template-columns: 1fr 65px;
   padding: 6px 10px;
   background: var(--bg-tertiary);
   border-radius: 6px 6px 0 0;
   border-bottom: 1px solid var(--border-color);
-  font-size: 0.65rem;
+  font-size: 0.55rem;
   font-weight: 700;
   color: var(--text-muted);
 }
 
 .th-price, .th-size {
-  text-align: right;
-}
-.th-side, .th-ex {
-  text-align: center;
+  text-align: left;
 }
 
 .table-body {
@@ -161,7 +140,7 @@ function formatSize(val) {
 
 .tape-row {
   display: grid;
-  grid-template-columns: 80px 1fr 1fr 50px 55px;
+  grid-template-columns: 1fr 65px;
   padding: 5px 10px;
   font-size: 0.74rem;
   align-items: center;
@@ -169,11 +148,14 @@ function formatSize(val) {
   transition: background 0.15s;
 }
 
-.td-price, .td-size {
-  text-align: right;
+.td-price {
+  text-align: left;
 }
-.td-side, .td-ex {
-  text-align: center;
+.td-size {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
 }
 
 /* Row Styling by trade condition */

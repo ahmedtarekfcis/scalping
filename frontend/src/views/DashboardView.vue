@@ -64,13 +64,13 @@ const store = useMarketStore();
 }
 
 .book-container {
-  flex: 1.45;
-  min-width: 320px;
+  flex: 1.75;
+  min-width: 0;
 }
 
 .tape-container {
-  flex: 1.15;
-  min-width: 320px;
+  flex: 1;
+  min-width: 0;
 }
 
 @media (max-width: 1024px) {

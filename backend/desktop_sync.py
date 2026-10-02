@@ -4,8 +4,8 @@ import pyautogui
 
 # --- CONFIGURE YOUR ABSOLUTE SCREEN COORDINATES HERE ---
 # Use the backend/mouse_locator.py script to find the exact X, Y
-WEBULL_SEARCH_X = 650
-WEBULL_SEARCH_Y = 120
+WEBULL_SEARCH_X = 660
+WEBULL_SEARCH_Y = 90
 
 CPRO_SEARCH_X = 160
 CPRO_SEARCH_Y = 125

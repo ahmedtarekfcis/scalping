@@ -237,7 +237,7 @@ class IBKRScannerEngine:
             })
 
     async def scan_market(self):
-        """Starts the live scanner subscription if not already running."""
+        """Starts the live scanner polling loop if not already running."""
         if not IB_INSYNC_AVAILABLE:
             print("ib_insync is not available")
             return
@@ -250,8 +250,11 @@ class IBKRScannerEngine:
             if not connected:
                 return
 
+        self.is_running = True
+        asyncio.create_task(self._scanner_loop())
+
+    async def _scanner_loop(self):
         try:
-            # 1. Define the Scanner Subscription Parameters
             sub = ScannerSubscription(
                 instrument='STK',
                 locationCode='STK.US.MAJOR',
@@ -260,15 +263,15 @@ class IBKRScannerEngine:
                 belowPrice=17.0
             )
             
-            # print("\n" + "="*50)
-            # print(f"[{time.strftime('%X')}] Sending Live Scanner Subscription: {sub.scanCode}...")
-            
-            # 2. Subscribe to live scanner data
-            self.scanner_data = self.scanner_ib.reqScannerSubscription(sub)
-            self.scanner_data.updateEvent += self.on_scanner_data
-            
-            self.is_running = True
-            
+            while self.is_running:
+                try:
+                    scan_results = await self.scanner_ib.reqScannerDataAsync(sub)
+                    self.on_scanner_data(scan_results)
+                except Exception as e:
+                    print(f"Scanner data fetch error: {e}")
+                
+                await asyncio.sleep(5)
+                
         except Exception as e:
-            print(f"Scanner error: {e}")
+            print(f"Scanner loop error: {e}")
             self.is_running = False

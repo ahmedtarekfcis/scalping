@@ -46,7 +46,7 @@ onMounted(() => {
   padding: 6px 16px 16px 16px;
   gap: 8px;
   box-sizing: border-box;
-  background: radial-gradient(circle at 50% 0%, #151d2e 0%, var(--bg-primary) 70%);
+  background: rgba(0, 0, 0, 0.85);
 }
 
 /* Removed nav-tabs CSS */

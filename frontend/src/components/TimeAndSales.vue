@@ -1,58 +1,18 @@
 <template>
-  <div class="tape-panel glass-panel">
-    <!-- IBKR-Style Frozen Pinned 'Current' NBBO & Last Trade Row -->
-    <div class="pinned-current-bar mono">
-      <div class="pinned-pod bid-pod">
-        <span class="pod-val text-green font-bold">
-          {{ bestBid ? bestBid.price.toFixed(2) : '--.--' }}
-        </span>
-        <span class="pod-size text-muted">
-          {{ bestBid ? formatNum(bestBid.size) : '-' }}
-        </span>
-      </div>
+  <div 
+    class="tape-panel glass-panel"
+    @mouseenter="setPause(true)"
+    @mouseleave="setPause(false)"
+  >
 
-      <div class="pinned-pod last-pod" :class="lastTradeSideClass">
-        <div class="last-pod-row">
-          <div class="last-price-col">
-            <span class="pod-val font-bold" :class="lastTradePriceClass">
-              {{ lastTrade ? lastTrade.price.toFixed(2) : (store.lastPrice ? store.lastPrice.toFixed(2) : '--.--') }}
-            </span>
-          </div>
-          <div class="spread-col">
-            <span :class="{'opacity-0': !(store.spread > 0)}" class="spread-chip">[{{ store.spread > 0 ? Math.round(store.spread * 100) : 0 }}]</span>
-          </div>
-        </div>
-        <div class="last-pod-row">
-          <div class="size-col">
-            <span class="pod-size font-bold" :class="lastTradePriceClass">
-              {{ lastTrade ? formatNum(lastTrade.size) : '-' }}
-            </span>
-          </div>
-          <div class="agg-col">
-            <span :class="{'opacity-0': !(lastTrade && lastTrade.orderCount > 1)}" class="agg-chip">[{{ lastTrade && lastTrade.orderCount > 1 ? lastTrade.orderCount : 2 }}x]</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="pinned-pod ask-pod">
-        <span class="pod-val text-red font-bold">
-          {{ bestAsk ? bestAsk.price.toFixed(2) : '--.--' }}
-        </span>
-        <span class="pod-size text-muted">
-          {{ bestAsk ? formatNum(bestAsk.size) : '-' }}
-        </span>
-      </div>
-    </div>
 
     <!-- Tape Table Header -->
     <div class="tape-table-header mono">
-      <div v-if="isPaused" class="pause-overlay">PAUSED (Hovering tape to inspect)</div>
-      <span class="col-time">TIME</span>
-      <span class="col-price">PRICE</span>
-      <div class="col-size col-size-th">
-        <span>SIZE</span>
+      <div v-if="isPaused" class="pause-overlay">
+        <span>PAUSED (Sizes /100)</span>
+        
         <div class="filter-icon-wrap" @click="showSizeFilter = !showSizeFilter" title="Filter trades by minimum size">
-          <svg class="filter-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="filter-icon" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
           </svg>
           <div v-if="showSizeFilter" class="filter-popover" @click.stop>
@@ -68,14 +28,26 @@
           </div>
         </div>
       </div>
+      
+      <div class="col-size col-size-th">
+        <div class="size-title-wrap">
+          <span style="font-size: 8px;">SIZE</span>
+          <span v-if="store.tapeMinSize > 0" class="active-filter-badge">
+            &ge;{{ formatNum(store.tapeMinSize) }}
+          </span>
+        </div>
+      </div>
+
+      <div class="col-price-th">
+        <span>PRICE</span>
+        <span class="spread-chip" v-if="store.spread > 0">[{{ Math.round(store.spread * 100) }}]</span>
+      </div>
     </div>
 
     <!-- Tape Scrolling Stream -->
     <div 
       class="tape-list mono" 
       ref="tapeContainer"
-      @mouseenter="setPause(true)"
-      @mouseleave="setPause(false)"
     >
       <div class="tape-stream">
         <div 
@@ -84,12 +56,26 @@
           class="tape-item"
           :class="[
             tick.side === 'BUY' ? 'row-buy' : (tick.side === 'SELL' ? 'row-sell' : 'row-mid'),
-            (tick.size >= 2000 || tick.isBlockTrade) ? (tick.side === 'BUY' ? 'row-block-buy' : (tick.side === 'SELL' ? 'row-block-sell' : 'row-block-mid')) : ''
+            tick.hasBorder ? (tick.side === 'BUY' ? 'row-block-buy' : (tick.side === 'SELL' ? 'row-block-sell' : 'row-block-mid')) : ''
           ]"
         >
-          <!-- Time (MM:SS only) -->
-          <span class="col-time text-muted">{{ formatTime(tick.time) }}</span>
-
+          <!-- Aggregated Size & Multiplier Badge with Gold Thunder Box -->
+          <span 
+            class="col-size font-bold"
+            :class="[
+              tick.side === 'BUY' ? 'text-green' : (tick.side === 'SELL' ? 'text-red' : 'text-mid')
+            ]"
+          >
+            <!-- Thunder Badge: Dynamic size >= median * 6 -->
+            <span class="thunder-container">
+              <span v-if="tick.hasIcon" class="block-badge" title="Whale Block">⚡</span>
+            </span>
+            
+            <span class="size-val-container" :class="getSizeClasses(tick.size)">
+              {{ formatNum(tick.size) }}
+            </span>
+          </span>
+          
           <!-- Price: Always reflects original side (Green for BUY, Red for SELL) -->
           <span 
             class="col-price font-bold" 
@@ -98,26 +84,6 @@
             ]"
           >
             {{ tick.price.toFixed(2) }}
-          </span>
-
-          <!-- Aggregated Size & Multiplier Badge with Gold Thunder Box -->
-          <span 
-            class="col-size font-bold"
-            :class="[
-              tick.side === 'BUY' ? 'text-green' : (tick.side === 'SELL' ? 'text-red' : 'text-mid')
-            ]"
-          >
-            <!-- Thunder Badge: Only for Mega/Whale Block Trades (≥ 5,000 shares) -->
-            <span class="thunder-container">
-              <span v-if="tick.size >= 5000 || (tick.isBlockTrade && tick.size >= 4000)" class="block-badge" title="Whale Block: ≥5,000 shares">⚡</span>
-            </span>
-            
-            <span class="size-val-container">
-              {{ formatNum(tick.size) }}
-              <span class="agg-count-tag" :style="{ opacity: (tick.orderCount && tick.orderCount > 1) ? 1 : 0 }" title="Aggregated consecutive trades at same price & ms">
-                {{ tick.orderCount || 1 }}x
-              </span>
-            </span>
           </span>
         </div>
       </div>
@@ -205,6 +171,14 @@ function formatNum(num) {
   if (num === undefined || num === null || isNaN(num)) return '0';
   return formatLots(num);
 }
+
+function getSizeClasses(size) {
+  if (size === undefined || size === null || isNaN(size)) return 'size-1-digit';
+  const lots = Math.floor(size / 100);
+  if (lots >= 100) return 'size-3-digit'; // 3+ digits
+  if (lots >= 10) return 'size-2-digit';  // 2 digits
+  return 'size-1-digit';                  // 1 digit
+}
 </script>
 
 <style scoped>
@@ -214,7 +188,7 @@ function formatNum(num) {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: var(--bg-secondary);
+  background: rgba(0, 0, 0, 0.6);
 }
 
 .panel-header {
@@ -268,8 +242,39 @@ function formatNum(num) {
 .col-size-th {
   display: flex !important;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between !important; /* Move icon to the right */
   gap: 6px;
+  width: 100%;
+}
+
+.size-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lot-indicator {
+  font-size: 9px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.active-filter-badge {
+  font-size: 9px;
+  font-weight: 900;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.col-price-th {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding-right: 8px;
 }
 
 .filter-icon-wrap {
@@ -277,8 +282,8 @@ function formatNum(num) {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
-  border-radius: 4px;
+  padding: 2px; /* Smaller padding */
+  border-radius: 3px;
   background: rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.15);
   cursor: pointer;
@@ -485,11 +490,11 @@ function formatNum(num) {
 .tape-table-header {
   position: relative;
   display: grid;
-  grid-template-columns: 88px 1fr 1.2fr;
-  padding: 8px 7px 8px 14px;
+  grid-template-columns: 1fr 65px;
+  padding: 8px 7px 8px 12px;
   height: 36px;
   box-sizing: border-box;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
   color: var(--text-muted);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -512,17 +517,19 @@ function formatNum(num) {
 
 .tape-item {
   display: grid;
-  grid-template-columns: 88px 1fr 1.2fr;
+  grid-template-columns: 1fr 65px;
   align-items: center;
-  padding: 4px 7px 4px 14px;
+  padding: 4px 7px 4px 12px;
   height: 32px;
   box-sizing: border-box;
+  border-left: 4px solid transparent;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   transition: background-color 0.15s ease;
+  position: relative;
 }
 
 .tape-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: transparent;
 }
 
 /* Column Alignments */
@@ -531,27 +538,27 @@ function formatNum(num) {
 }
 
 .col-price {
-  text-align: right;
+  text-align: left;
   font-size: 15.5px;
   font-weight: 800;
   padding-right: 8px;
 }
 
 .col-size {
-  text-align: right;
+  text-align: left;
   font-size: 15px;
   font-weight: 800;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 4px;
 }
 
 .thunder-container {
-  margin-right: auto;
-  width: 20px;
   display: flex;
   align-items: center;
+  width: 20px;
+  justify-content: flex-start;
 }
 
 .size-val-container {
@@ -622,11 +629,30 @@ function formatNum(num) {
 .text-primary { color: var(--text-primary); }
 .font-bold { font-weight: 700; }
 
+.size-3-digit {
+  opacity: 1;
+  animation: size-pulse-anim 1.5s infinite;
+}
+
+.size-2-digit {
+  opacity: 1;
+}
+
+.size-1-digit {
+  opacity: 0.45;
+}
+
+@keyframes size-pulse-anim {
+  0% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); transform: scale(1); }
+  50% { text-shadow: 0 0 8px currentColor; transform: scale(1.05); }
+  100% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); transform: scale(1); }
+}
+
 .row-buy {
-  background: rgba(0, 208, 132, 0.025);
+  background: transparent;
 }
 .row-sell {
-  background: rgba(255, 59, 86, 0.025);
+  background: transparent;
 }
 .row-mid {
   background: transparent;
@@ -636,10 +662,8 @@ function formatNum(num) {
 /* BLOCK TRADE HIGHLIGHTING (>= 2000 SHARES)                */
 /* ======================================================== */
 .row-block-buy {
-  background: rgba(0, 208, 132, 0.14) !important;
+  background: transparent !important;
   border-left: 4px solid #00d084 !important;
-  border-bottom: 1px solid rgba(0, 208, 132, 0.35) !important;
-  box-shadow: inset 0 0 12px rgba(0, 208, 132, 0.18);
   font-weight: 800;
 }
 
@@ -648,10 +672,8 @@ function formatNum(num) {
 }
 
 .row-block-sell {
-  background: rgba(255, 59, 86, 0.14) !important;
+  background: transparent !important;
   border-left: 4px solid #ff3b56 !important;
-  border-bottom: 1px solid rgba(255, 59, 86, 0.35) !important;
-  box-shadow: inset 0 0 12px rgba(255, 59, 86, 0.18);
   font-weight: 800;
 }
 
@@ -660,8 +682,7 @@ function formatNum(num) {
 }
 
 .row-block-mid {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-left: 4px solid #cbd5e1 !important;
+  background: transparent !important;
 }
 
 /* Distinctive Gold Box Badge for Thunder ⚡ Icon */
@@ -669,22 +690,20 @@ function formatNum(num) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 13px; /* Slightly larger icon */
   font-weight: 900;
-  background: rgba(250, 204, 21, 0.22);
   color: #facc15;
-  border: 1px solid rgba(250, 204, 21, 0.6);
-  border-radius: 4px;
-  padding: 1px 4px;
+  background: transparent;
+  border: none;
   margin-right: 4px;
-  box-shadow: 0 0 8px rgba(250, 204, 21, 0.35);
+  text-shadow: 0 0 8px rgba(250, 204, 21, 0.5);
   animation: pulse-block 1.5s infinite;
 }
 
 @keyframes pulse-block {
-  0% { transform: scale(0.95); box-shadow: 0 0 4px rgba(250, 204, 21, 0.2); }
-  50% { transform: scale(1.08); box-shadow: 0 0 10px rgba(250, 204, 21, 0.5); }
-  100% { transform: scale(0.95); box-shadow: 0 0 4px rgba(250, 204, 21, 0.2); }
+  0% { transform: scale(0.95); text-shadow: 0 0 4px rgba(250, 204, 21, 0.4); }
+  50% { transform: scale(1.15); text-shadow: 0 0 12px rgba(250, 204, 21, 0.8); }
+  100% { transform: scale(0.95); text-shadow: 0 0 4px rgba(250, 204, 21, 0.4); }
 }
 
 /* Animations removed for maximum visibility */
@@ -719,12 +738,14 @@ function formatNum(num) {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 1px;
+  text-align: center;
   z-index: 10;
-  pointer-events: none;
+  pointer-events: auto;
   backdrop-filter: blur(2px);
   border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+  gap: 12px;
 }
 </style>
