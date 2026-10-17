@@ -69,7 +69,7 @@
         <div class="table-body">
           <div 
             v-for="(row, idx) in store.displayedBids" 
-            :key="'bid-' + row.price + '-' + idx"
+            :key="'bid-' + row.price"
             class="book-row bid-row"
             :class="[
               idx < 9 ? `row-tier-${idx}` : 'row-tier-default',
@@ -107,7 +107,7 @@
         <div class="table-body">
           <div 
             v-for="(row, idx) in store.displayedAsks" 
-            :key="'ask-' + row.price + '-' + idx"
+            :key="'ask-' + row.price"
             class="book-row ask-row"
             :class="[
               idx < 9 ? `row-tier-${idx}` : 'row-tier-default',
@@ -661,7 +661,7 @@ function formatSizeK(size) {
   position: absolute;
   top: 0;
   bottom: 0;
-  transition: width 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: width 0.1s linear;
   border-radius: 0;
   box-shadow: none;
 }

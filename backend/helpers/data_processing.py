@@ -8,12 +8,16 @@ def aggregate_dom(dom_list, is_bid: bool, mmids: List[str]) -> List[DepthLevel]:
     """
     aggregated = {}
     for row in dom_list[:100]:
+        # Skip empty / placeholder rows (price 0 or size 0) — they are not real liquidity
+        if not row.price or row.price <= 0 or not row.size or row.size <= 0:
+            continue
         rounded_price = round(row.price, 2)
         if rounded_price not in aggregated:
             aggregated[rounded_price] = {
                 "size": 0,
                 "ordersCount": 0,
-                "marketMaker": row.marketMaker or random.choice(mmids)
+                # Real exchange/MM tag only — never invent one
+                "marketMaker": row.marketMaker or ""
             }
         aggregated[rounded_price]["size"] += int(row.size)
         aggregated[rounded_price]["ordersCount"] += getattr(row, 'orderCount', 1) or 1
@@ -26,6 +30,7 @@ def aggregate_dom(dom_list, is_bid: bool, mmids: List[str]) -> List[DepthLevel]:
             ordersCount=data["ordersCount"]
         )
         for p, data in aggregated.items()
+        if data["size"] > 0
     ]
     result.sort(key=lambda x: x.price, reverse=is_bid)
     return result

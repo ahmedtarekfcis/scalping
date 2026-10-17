@@ -1,7 +1,8 @@
 import asyncio
 import time
 import math
-from typing import Callable, Optional
+import datetime
+from typing import Callable, Dict, Optional
 
 try:
     from ib_insync import IB, ScannerSubscription
@@ -11,6 +12,25 @@ except ImportError:
 
 from models import IBKRConnectionConfig
 from helpers.data_processing import calculate_historical_metrics
+
+# A symbol is shown only after its total daily volume has broken this many shares.
+MIN_DAILY_VOLUME = 500_000
+# How many of the hottest scanner symbols are examined each cycle.
+SCAN_TOP_N = 20
+# IBKR's Volume tick (8 / delayed 74) is reported in round lots (x100) for US stocks.
+LOTS_MULTIPLIER = 100
+
+try:
+    from zoneinfo import ZoneInfo
+    _NY_TZ = ZoneInfo("America/New_York")
+except Exception:  # tzdata missing -> fixed offset fallback
+    _NY_TZ = datetime.timezone(datetime.timedelta(hours=-5))
+
+
+def _trading_day_key() -> str:
+    """US trading day identifier. IBKR's daily volume resets around 04:00 ET (pre-market open)."""
+    now_et = datetime.datetime.now(_NY_TZ) - datetime.timedelta(hours=4)
+    return now_et.date().isoformat()
 
 class IBKRScannerEngine:
     """
@@ -26,6 +46,12 @@ class IBKRScannerEngine:
         self.cached_hist = {}
         self.is_fetching = {}
         self.subscribed_symbols = {}
+
+        # Symbols that already broke MIN_DAILY_VOLUME today: {symbol: volume_when_qualified}.
+        # Once qualified they are never re-checked until the next trading day.
+        self.qualified: Dict[str, int] = {}
+        self.qualified_day = _trading_day_key()
+        self._update_lock = asyncio.Lock()
 
     def calculate_score(self, m5: float, m1: float, va: float) -> int:
         """
@@ -79,20 +105,51 @@ class IBKRScannerEngine:
                 clientId=self.config.clientId + 10,
                 timeout=5
             )
+            # Same as the live-data connection: live data if available, otherwise delayed.
+            # (Market data type is per connection, so it must be set here too.)
+            self.scanner_ib.reqMarketDataType(3)
             print("Scanner IB connected successfully.")
             return True
         except Exception as e:
             print(f"Failed to reconnect scanner: {e}")
             return False
 
+    @staticmethod
+    def _read_daily_volume(ticker) -> Optional[int]:
+        """
+        Total shares traded today, or None if nothing has arrived yet.
+        Uses the larger of RTVolume (tick 233, already shares) and the Volume tick (x100 lots)
+        so a missing/lagging source never hides a symbol.
+        """
+        candidates = []
+        rt = getattr(ticker, 'rtVolume', None)
+        if isinstance(rt, (int, float)) and not math.isnan(rt) and rt > 0:
+            candidates.append(float(rt))
+        vol = getattr(ticker, 'volume', None)
+        if vol is not None and not math.isnan(vol) and vol > 0:
+            candidates.append(float(vol) * LOTS_MULTIPLIER)
+        return int(max(candidates)) if candidates else None
+
     def on_scanner_data(self, data):
         """Callback for live scanner updates"""
-        # Take top 30 instead of 10 so we have enough buffer to filter out dead stocks
-        asyncio.create_task(self._handle_scanner_update(list(data[:30])))
+        # Overlapping runs could broadcast out-of-order results -> drop the update if one is still running
+        if self._update_lock.locked():
+            return
+        asyncio.create_task(self._handle_scanner_update(list(data[:SCAN_TOP_N])))
 
     async def _handle_scanner_update(self, scan_results):
+        async with self._update_lock:
+            await self._process_scanner_update(scan_results)
+
+    async def _process_scanner_update(self, scan_results):
         now = time.time()
         contracts_to_fetch = []
+
+        # New trading day -> volume counters reset, forget yesterday's qualifications
+        today = _trading_day_key()
+        if today != self.qualified_day:
+            self.qualified.clear()
+            self.qualified_day = today
         
         current_symbols = {item.contractDetails.contract.symbol for item in scan_results}
         
@@ -129,6 +186,22 @@ class IBKRScannerEngine:
                     self.scanner_ib.reqMktData(contract, '165,233', False, False)
                 except Exception as e:
                     print(f"Scanner reqMktData error for {symbol}: {e}")
+
+            # Daily-volume gate: the first time a symbol breaks MIN_DAILY_VOLUME it is
+            # marked qualified for the rest of the trading day and never re-checked.
+            if symbol not in self.qualified:
+                tkr = self.scanner_ib.ticker(contract)
+                vol_now = self._read_daily_volume(tkr) if tkr else None
+                if vol_now is not None and vol_now >= MIN_DAILY_VOLUME:
+                    self.qualified[symbol] = vol_now
+                    print(
+                        f"[SCANNER] {symbol} qualified: {vol_now:,} shares "
+                        f"(raw volume tick={getattr(tkr, 'volume', None)}, rtVolume={getattr(tkr, 'rtVolume', None)})"
+                    )
+
+            # Only qualified symbols are enriched / shown -> skip history for the rest
+            if symbol not in self.qualified:
+                continue
 
             needs_fetch = symbol not in self.cached_hist or (now - self.last_fetch_time.get(symbol, 0) > 10)
             
@@ -169,30 +242,26 @@ class IBKRScannerEngine:
                 finally:
                     self.is_fetching[symbol] = False
                     
-        # 3. Build final list, filtering out illiquid stocks, then limit to top 10
+        # 3. Build final list: ONLY symbols that broke MIN_DAILY_VOLUME today, limited to top 10
         final_enriched = []
         for item in scan_results:
             sym = item.contractDetails.contract.symbol
+            if sym not in self.qualified:
+                continue
             hist_data = self.cached_hist.get(sym, {})
             
             # Live Market Data overrides
             ticker = self.scanner_ib.ticker(item.contractDetails.contract)
             gap_pct = "--"
             hod_room = "--"
-            daily_vol = "--"
+            # Never regress to "--": start from the volume recorded when it qualified
+            daily_vol = self.qualified[sym]
             
             if ticker:
-                vol = getattr(ticker, 'volume', None)
-                if vol is not None and not math.isnan(vol) and vol > 0:
-                    daily_vol = int(vol)
-                elif hasattr(ticker, 'rtVolume') and ticker.rtVolume:
-                    # rtVolume is formatted as: price;size;time;total_vol;vwap;single_trade
-                    try:
-                        rt_parts = str(ticker.rtVolume).split(';')
-                        if len(rt_parts) >= 4 and float(rt_parts[3]) > 0:
-                            daily_vol = int(float(rt_parts[3]))
-                    except Exception:
-                        pass
+                live_vol = self._read_daily_volume(ticker)
+                if live_vol is not None and live_vol > daily_vol:
+                    daily_vol = live_vol
+                    self.qualified[sym] = live_vol
                 
                 # Gap % = (Open - PrevClose) / PrevClose
                 if ticker.close and not math.isnan(ticker.close) and ticker.close > 0 and ticker.open and not math.isnan(ticker.open) and ticker.open > 0:

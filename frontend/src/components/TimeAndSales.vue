@@ -29,58 +29,99 @@
         </div>
       </div>
       
-      <div class="l1-bid">
-        {{ bestBid ? bestBid.price.toFixed(2) : '--.--' }}
+      <div class="l1-ask">
+        {{ bestAsk ? bestAsk.price.toFixed(2) : '--.--' }}
       </div>
       <div class="l1-spread">
         {{ Math.round(store.spread * 100) }}
       </div>
-      <div class="l1-ask">
-        {{ bestAsk ? bestAsk.price.toFixed(2) : '--.--' }}
+      <div class="l1-bid">
+        {{ bestBid ? bestBid.price.toFixed(2) : '--.--' }}
       </div>
     </div>
 
-    <!-- Tape Scrolling Stream -->
-    <div 
-      class="tape-list mono" 
-      ref="tapeContainer"
-    >
-      <div class="tape-stream">
-        <div 
-          v-for="tick in displayedTape" 
-          :key="tick.id"
-          class="tape-item"
-          :class="[
-            tick.side === 'BUY' ? 'row-buy' : (tick.side === 'SELL' ? 'row-sell' : 'row-mid'),
-            tick.hasBorder ? (tick.side === 'BUY' ? 'row-block-buy' : (tick.side === 'SELL' ? 'row-block-sell' : 'row-block-mid')) : ''
-          ]"
-        >
-          <!-- Aggregated Size & Multiplier Badge with Gold Thunder Box -->
-          <span 
-            class="col-size font-bold"
+    <!-- Tape Scrolling Stream Split into 3 Columns -->
+    <div class="tape-columns mono">
+      <!-- Left Column: Red Executions (Ask / Sell) -->
+      <div class="tape-col tape-col-red">
+        <div class="tape-stream">
+          <div 
+            v-for="tick in redTape" 
+            :key="tick.id"
+            class="tape-item row-sell"
             :class="[
-              tick.side === 'BUY' ? 'text-green' : (tick.side === 'SELL' ? 'text-red' : 'text-mid')
+              tick.hasBorder ? 'row-block-sell' : ''
             ]"
           >
-            <!-- Thunder Badge: Dynamic size >= median * 6 -->
-            <span class="thunder-container">
-              <span v-if="tick.hasIcon" class="block-badge" title="Whale Block">⚡</span>
+            <span class="col-size font-bold text-red">
+              <span class="thunder-container">
+                <span v-if="tick.hasIcon" class="block-badge" title="Whale Block">⚡</span>
+              </span>
+              <span class="size-val-container" :class="getSizeClasses(tick.size)">
+                {{ formatNum(tick.size) }}
+              </span>
             </span>
-            
-            <span class="size-val-container" :class="getSizeClasses(tick.size)">
-              {{ formatNum(tick.size) }}
+            <span class="col-price font-bold text-white">
+              {{ tick.price.toFixed(2) }}
             </span>
-          </span>
-          
-          <!-- Price: Always white -->
-          <span class="col-price font-bold text-white">
-            {{ tick.price.toFixed(2) }}
-          </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Middle Column: White Executions (Mid) -->
+      <div class="tape-col tape-col-white">
+        <div class="tape-stream">
+          <div 
+            v-for="tick in whiteTape" 
+            :key="tick.id"
+            class="tape-item row-mid"
+            :class="[
+              tick.hasBorder ? 'row-block-mid' : ''
+            ]"
+          >
+            <span class="col-size font-bold text-mid">
+              <span class="thunder-container">
+                <span v-if="tick.hasIcon" class="block-badge" title="Whale Block">⚡</span>
+              </span>
+              <span class="size-val-container" :class="getSizeClasses(tick.size)">
+                {{ formatNum(tick.size) }}
+              </span>
+            </span>
+            <span class="col-price font-bold text-white">
+              {{ tick.price.toFixed(2) }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Green Executions (Bid / Buy) -->
+      <div class="tape-col tape-col-green">
+        <div class="tape-stream">
+          <div 
+            v-for="tick in greenTape" 
+            :key="tick.id"
+            class="tape-item row-buy"
+            :class="[
+              tick.hasBorder ? 'row-block-buy' : ''
+            ]"
+          >
+            <span class="col-size font-bold text-green">
+              <span class="thunder-container">
+                <span v-if="tick.hasIcon" class="block-badge" title="Whale Block">⚡</span>
+              </span>
+              <span class="size-val-container" :class="getSizeClasses(tick.size)">
+                {{ formatNum(tick.size) }}
+              </span>
+            </span>
+            <span class="col-price font-bold text-white">
+              {{ tick.price.toFixed(2) }}
+            </span>
+          </div>
         </div>
       </div>
 
       <div v-if="filteredTape.length === 0" class="empty-state">
-        Listening to tape prints (Min: {{ store.tapeMinSize || 0 }} shares)...
+        Listening to tape prints (> {{ Math.max(store.tapeFloorSize, store.tapeMinSize || 0) }} shares)...
       </div>
     </div>
   </div>
@@ -100,7 +141,7 @@ const filteredTape = computed(() => {
   const minThreshold = (store.tapeMinSize !== undefined && store.tapeMinSize !== null && store.tapeMinSize !== '')
     ? Math.max(0, Number(store.tapeMinSize))
     : 0;
-  return (store.tape || []).filter(t => t.size >= minThreshold);
+  return (store.tape || []).filter(t => t.size > store.tapeFloorSize && t.size >= minThreshold);
 });
 
 const isPaused = ref(false);
@@ -119,6 +160,18 @@ const setPause = (val) => {
 
 const displayedTape = computed(() => {
   return isPaused.value ? pausedTape.value : filteredTape.value;
+});
+
+const redTape = computed(() => {
+  return displayedTape.value.filter(tick => tick.side === 'SELL');
+});
+
+const whiteTape = computed(() => {
+  return displayedTape.value.filter(tick => tick.side !== 'BUY' && tick.side !== 'SELL');
+});
+
+const greenTape = computed(() => {
+  return displayedTape.value.filter(tick => tick.side === 'BUY');
 });
 
 const lastTradePriceClass = computed(() => {
@@ -492,11 +545,23 @@ function getSizeClasses(size) {
   align-items: center;
 }
 
-.l1-bid, .l1-ask, .l1-spread {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
+.l1-ask {
+  flex: 1;
+  background: rgba(255, 59, 86, 0.15);
+  color: #ff3b56;
+  font-size: 15px;
+  font-weight: 800;
+  border-right: 1px solid #202020;
+}
+
+.l1-spread {
+  flex: 1;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #facc15;
+  font-size: 13px;
+  font-weight: 900;
+  border-right: 1px solid #202020;
 }
 
 .l1-bid {
@@ -507,41 +572,40 @@ function getSizeClasses(size) {
   font-weight: 800;
 }
 
-.l1-ask {
+.tape-columns {
   flex: 1;
-  background: rgba(255, 59, 86, 0.15);
-  color: #ff3b56;
-  font-size: 15px;
-  font-weight: 800;
-}
-
-.l1-spread {
-  padding: 0 12px;
-  background: rgba(255, 255, 255, 0.05);
-  color: #facc15;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.tape-list {
-  flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
   position: relative;
-  scrollbar-gutter: stable;
   background: #0d0d0d;
 }
 
-.tape-list::-webkit-scrollbar {
+.tape-col {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  border-right: 1px solid #202020;
+}
+
+.tape-col:last-child {
+  border-right: none;
+}
+
+.tape-col::-webkit-scrollbar {
   width: 4px;
 }
-.tape-list::-webkit-scrollbar-track {
+.tape-col::-webkit-scrollbar-track {
   background: #0d0d0d;
 }
-.tape-list::-webkit-scrollbar-thumb {
+.tape-col::-webkit-scrollbar-thumb {
   background: #2a2b2f;
   border-radius: 2px;
 }
-.tape-list::-webkit-scrollbar-thumb:hover {
+.tape-col::-webkit-scrollbar-thumb:hover {
   background: #38bdf8;
 }
 
@@ -767,10 +831,15 @@ function getSizeClasses(size) {
 /* Animations removed for maximum visibility */
 
 .empty-state {
+  position: absolute;
+  top: 40px;
+  left: 0;
+  right: 0;
   padding: 40px 20px;
   text-align: center;
   color: var(--text-muted);
   font-size: 12px;
+  pointer-events: none;
 }
 
 .waiting-only-text {

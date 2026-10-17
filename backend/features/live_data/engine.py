@@ -1,11 +1,25 @@
 import asyncio
 import datetime
 import math
+import time
 from typing import Callable, Dict, Optional
 
 from models import OrderBook, TapeTick, ConnectionStatus, IBKRConnectionConfig
 from ibkr_apis.client import IBKRClient
-from helpers.data_processing import aggregate_dom, aggregate_tape_tick
+from helpers.data_processing import aggregate_dom
+
+# Minimum gap between two L2 snapshots sent to the frontend (seconds).
+# IBKR can push hundreds of depth events per second; a human can't read more
+# than a handful of refreshes, so we coalesce them (~7 updates/s) to keep the
+# ladder calm while staying real-time.
+L2_MIN_INTERVAL = 0.15
+
+# Tape prints must be strictly larger than this many shares (i.e. > 1 lot).
+MIN_TAPE_SIZE = 100
+
+# If tick-by-tick data arrived within this many seconds we trust it exclusively
+# and ignore the (duplicate) last-trade field of the market-data ticker.
+TBT_FRESH_SECONDS = 5.0
 
 class LiveDataEngine:
     """
@@ -23,6 +37,15 @@ class LiveDataEngine:
         self.mkt_ticker = None
         self.contract = None
         self._last_tape_tick: Optional[TapeTick] = None
+
+        # L2 throttling state
+        self._last_l2_broadcast: float = 0.0
+        self._l2_flush_handle = None
+        self._last_l2_signature = None
+
+        # Tape de-duplication state
+        self._last_tbt_ts: float = 0.0
+        self._last_trade_key = None
 
         self.mmids = ["ISLD", "ARCA", "EDGA", "EDGX", "BATS", "NSDQ", "DRCT", "MEMX", "IEX", "NYS"]
 
@@ -122,6 +145,15 @@ class LiveDataEngine:
 
         self.active_symbol = symbol
 
+        # Reset throttling / de-dup state for the new symbol
+        if self._l2_flush_handle:
+            self._l2_flush_handle.cancel()
+            self._l2_flush_handle = None
+        self._last_l2_broadcast = 0.0
+        self._last_l2_signature = None
+        self._last_tbt_ts = 0.0
+        self._last_trade_key = None
+
         print(f"[LIVE DATA] Qualifying contract for {symbol}...")
         self.contract = await self.client.qualify_contract(symbol)
         if not self.contract:
@@ -136,46 +168,95 @@ class LiveDataEngine:
         await self.subscribe_tape(symbol)
 
 
+    @staticmethod
+    def _valid_price(value) -> Optional[float]:
+        """Return a rounded price, or None for missing / NaN / non-positive values."""
+        try:
+            if value is None or math.isnan(value) or value <= 0:
+                return None
+            return round(value, 2)
+        except (TypeError, ValueError):
+            return None
+
     def _on_depth_update(self, ticker):
+        # NOTE: ib_insync shares a single Ticker per contract, so this handler is
+        # also fired by quote / last-trade events. We therefore coalesce events
+        # and only broadcast when the visible book really changed.
+        if not ticker or ticker.contract.symbol != self.active_symbol:
+            return
+
+        elapsed = time.monotonic() - self._last_l2_broadcast
+        if elapsed >= L2_MIN_INTERVAL:
+            self._flush_l2()
+        elif self._l2_flush_handle is None:
+            loop = asyncio.get_event_loop()
+            self._l2_flush_handle = loop.call_later(L2_MIN_INTERVAL - elapsed, self._flush_l2)
+
+    def _flush_l2(self):
+        self._l2_flush_handle = None
+        ticker = self.depth_ticker
         if not ticker or ticker.contract.symbol != self.active_symbol:
             return
 
         bids = aggregate_dom(ticker.domBids, True, self.mmids)
         asks = aggregate_dom(ticker.domAsks, False, self.mmids)
 
+        # Skip the broadcast when nothing visible changed (e.g. trigger was a tape/quote event)
+        signature = (
+            tuple((l.price, l.size) for l in bids),
+            tuple((l.price, l.size) for l in asks),
+        )
+        if signature == self._last_l2_signature:
+            return
+        self._last_l2_signature = signature
+        self._last_l2_broadcast = time.monotonic()
+
         book = OrderBook(
             symbol=self.active_symbol,
             bids=bids,
             asks=asks,
-            lastPrice=round(ticker.marketPrice(), 2) if ticker.marketPrice() else None
+            lastPrice=self._valid_price(ticker.marketPrice())
         )
         self.current_book[self.active_symbol] = book
         asyncio.create_task(self.broadcast_callback({"type": "L2_UPDATE", "data": book.dict()}))
-        
-        self._last_tape_tick = None
 
     async def _process_new_tick(self, new_tick: TapeTick):
-        if new_tick.size < 100:
+        # Only prints strictly larger than 1 lot (100 shares) are shown.
+        if new_tick.size <= MIN_TAPE_SIZE:
             return
 
-        aggregated, current_tick = aggregate_tape_tick(self._last_tape_tick, new_tick)
-        if not aggregated:
-            self._last_tape_tick = current_tick
-
-        await self.broadcast_callback({"type": "TAPE_TICK", "data": current_tick.dict()})
+        # Every print is sent as-is. (Previously same-price prints were merged and the
+        # cumulative size re-broadcast as a new row, which double counted volume.)
+        new_tick.isBlockTrade = new_tick.size >= 2000
+        await self.broadcast_callback({"type": "TAPE_TICK", "data": new_tick.dict()})
 
     def _on_mkt_data_update(self, ticker):
+        # Fallback tape source (e.g. delayed data without tick-by-tick). The shared
+        # Ticker fires this on EVERY depth/quote/trade event, so we must only emit
+        # when a genuinely new trade arrived and tick-by-tick isn't already feeding us.
         if not ticker or getattr(ticker.contract, 'symbol', None) != self.active_symbol:
             return
+        if time.monotonic() - self._last_tbt_ts < TBT_FRESH_SECONDS:
+            return
+
         last_price = ticker.last
-        if not last_price:
+        if not last_price or math.isnan(last_price):
             return
 
         raw_size = ticker.lastSize
-        size = 100 if raw_size is None or math.isnan(raw_size) else int(raw_size)
-
-        if size < 100:
+        if raw_size is None or math.isnan(raw_size):
             return
+        size = int(raw_size)
+
+        if size <= MIN_TAPE_SIZE:
+            return
+
+        volume = ticker.volume
+        volume = None if volume is None or math.isnan(volume) else volume
+        trade_key = (last_price, size, volume)
+        if trade_key == self._last_trade_key:
+            return
+        self._last_trade_key = trade_key
 
         side = "BUY" if (ticker.ask and last_price >= ticker.ask) else ("SELL" if (ticker.bid and last_price <= ticker.bid) else "MID")
 
@@ -196,10 +277,13 @@ class LiveDataEngine:
             if getattr(ticker.contract, 'symbol', None) != self.active_symbol:
                 continue
             for t in ticker.tickByTicks:
+                self._last_tbt_ts = time.monotonic()
                 raw_size = t.size
-                size = 100 if raw_size is None or math.isnan(raw_size) else int(raw_size)
+                if raw_size is None or math.isnan(raw_size):
+                    continue
+                size = int(raw_size)
 
-                if size < 100:
+                if size <= MIN_TAPE_SIZE:
                     continue
 
                 time_str = t.time.strftime("%M:%S") if hasattr(t.time, 'strftime') else datetime.datetime.now().strftime("%M:%S")

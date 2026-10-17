@@ -24,6 +24,8 @@ export const useMarketStore = defineStore('market', {
     spreadPct: 0,
     medianLevelSize: 100,
     overlayScope: { maxBidSize: 1, maxAskSize: 1 },
+    overlayLevels: 15,        // Overlay (depth bar) scale is computed from the first N levels only
+    overlayScaleTs: 0,        // Timestamp of last overlay scale update (for time-based release)
     smoothedMaxBidSize: 0,
     smoothedMaxAskSize: 0,
     
@@ -42,6 +44,7 @@ export const useMarketStore = defineStore('market', {
     tape: [], // Max 30 elements rolling
     maxTapeLength: 30,
     tapeMinSize: 0, // Default no size filter
+    tapeFloorSize: 100, // Prints must be strictly larger than this (> 1 lot) to be shown
     currentMinIndex: -1,
     currentVol1m: 0,
     
@@ -101,7 +104,7 @@ export const useMarketStore = defineStore('market', {
     displayedBids: (state) => state.bids.slice(0, 100),
     displayedAsks: (state) => state.asks.slice(0, 100),
     isPositiveChange: (state) => state.change >= 0,
-    filteredTape: (state) => state.tape.filter(t => t.size >= Math.max(100, state.tapeMinSize || 100)),
+    filteredTape: (state) => state.tape.filter(t => t.size > state.tapeFloorSize && t.size >= (state.tapeMinSize || 0)),
     bestBid: (state) => (state.bids && state.bids.length > 0 ? state.bids[0] : null),
     bestAsk: (state) => (state.asks && state.asks.length > 0 ? state.asks[0] : null),
     lastTrade: (state) => (state.tape && state.tape.length > 0 ? state.tape[0] : null),
@@ -419,44 +422,50 @@ export const useMarketStore = defineStore('market', {
       const maxDepth = Math.max(bidCum, askCum, 1);
       this.maxCumulativeDepth = maxDepth;
 
-      // Calculate separate maximum size for Bids and Asks independently (no price range restriction)
+      // Overlay scale: ONLY the first N (15) levels closest to the spread define the
+      // scale. Big orders sitting far away from price no longer squash/rescale the bars.
+      const nLevels = this.overlayLevels;
       let currentMaxBid = 1;
-      for (const bid of processedBids) {
+      for (const bid of processedBids.slice(0, nLevels)) {
         if (bid.size > currentMaxBid) currentMaxBid = bid.size;
       }
 
       let currentMaxAsk = 1;
-      for (const ask of processedAsks) {
+      for (const ask of processedAsks.slice(0, nLevels)) {
         if (ask.size > currentMaxAsk) currentMaxAsk = ask.size;
       }
 
-      // Apply independent exponential smoothing: prev * 0.7 + current * 0.3
-      if (!this.smoothedMaxBidSize || this.smoothedMaxBidSize <= 1) {
-        this.smoothedMaxBidSize = currentMaxBid;
-      } else {
-        this.smoothedMaxBidSize = (this.smoothedMaxBidSize * 0.7) + (currentMaxBid * 0.3);
-      }
+      // Peak-hold with slow release (time based, independent of update rate):
+      //  - target above current scale  -> follow immediately (bar never overflows)
+      //  - target below current scale  -> decay with a 5s half-life
+      // This keeps bar widths steady instead of re-scaling on every snapshot.
+      const nowTs = Date.now();
+      const dt = this.overlayScaleTs ? Math.min(nowTs - this.overlayScaleTs, 5000) : 0;
+      this.overlayScaleTs = nowTs;
+      const keep = Math.pow(0.5, dt / 5000);
+      const settle = (prev, target) => {
+        if (!prev || prev <= 1 || target >= prev) return target;
+        return target + (prev - target) * keep;
+      };
 
-      if (!this.smoothedMaxAskSize || this.smoothedMaxAskSize <= 1) {
-        this.smoothedMaxAskSize = currentMaxAsk;
-      } else {
-        this.smoothedMaxAskSize = (this.smoothedMaxAskSize * 0.7) + (currentMaxAsk * 0.3);
-      }
+      this.smoothedMaxBidSize = settle(this.smoothedMaxBidSize, currentMaxBid);
+      this.smoothedMaxAskSize = settle(this.smoothedMaxAskSize, currentMaxAsk);
 
       const effectiveMaxBid = Math.max(1, this.smoothedMaxBidSize);
       const effectiveMaxAsk = Math.max(1, this.smoothedMaxAskSize);
 
       this.overlayScope = { maxBidSize: Math.round(effectiveMaxBid), maxAskSize: Math.round(effectiveMaxAsk) };
 
-      // Calculate depth bar percentages separated: Bids relative to smoothedMaxBidSize, Asks relative to smoothedMaxAskSize
+      // Depth bar percentages: Bids relative to the bid scale, Asks relative to the ask scale
+      // (rows beyond the first N levels are capped at 100% of that scale).
       this.bids = processedBids.map((b) => ({
         ...b,
-        percent: Math.min(100, (b.size / effectiveMaxBid) * 100)
+        percent: Math.min(100, Math.round((b.size / effectiveMaxBid) * 1000) / 10)
       }));
 
       this.asks = processedAsks.map((a) => ({
         ...a,
-        percent: Math.min(100, (a.size / effectiveMaxAsk) * 100)
+        percent: Math.min(100, Math.round((a.size / effectiveMaxAsk) * 1000) / 10)
       }));
 
       // Calculate spread
@@ -472,8 +481,8 @@ export const useMarketStore = defineStore('market', {
     processTapeTick(tick) {
       if (!tick) return;
 
-      // 1. Size Filtering: Filter out and do not display any individual trades smaller than 100 shares
-      if (tick.size < 100) return;
+      // 1. Size Filtering: only show trades strictly larger than 100 shares (> 1 lot)
+      if (!tick.size || tick.size <= this.tapeFloorSize) return;
 
       // Calculate real-time volume for the *current calendar minute*
       const now = new Date();
@@ -560,6 +569,7 @@ export const useMarketStore = defineStore('market', {
       this.overlayScope = { maxBidSize: 1, maxAskSize: 1 };
       this.smoothedMaxBidSize = 0;
       this.smoothedMaxAskSize = 0;
+      this.overlayScaleTs = 0;
       this.scorecard = { total: 0, l2Imbalance: 0, tapeDelta15s: 0, tapePressure15s: 0, whaleAbsorption: 0, roundFigureCtx: 0, darkPool: 0, signals: [] };
       this.currentMinIndex = -1;
       this.currentVol1m = 0;
