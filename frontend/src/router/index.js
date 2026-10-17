@@ -20,6 +20,11 @@ const router = createRouter({
       path: '/trade-stats',
       name: 'trade-stats',
       component: TradeStatsView
+    },
+    {
+      path: '/chart',
+      name: 'chart',
+      component: () => import('../views/chart/ChartView.vue')
     }
   ]
 });

@@ -1,10 +1,20 @@
 <template>
   <div class="orderbook-panel glass-panel">
-    <!-- Scorecard Bar -->
+    <!-- Scorecard Bar (1:1.50 Ratio Layout) -->
     <div class="intel-top-bar mono" @mouseenter="showScoreDetails = true" @mouseleave="showScoreDetails = false">
 
-      <!-- Single centered bar: starts at middle, goes green→right or red→left -->
-      <div class="sc-single-wrap">
+      <!-- Left Side (Bid Dominance & Score) -->
+      <div class="sc-side-area sc-left-area">
+        <span class="sc-ratio-label text-green" title="Bid Depth Dominance">
+          {{ store.bidRatio }}%
+        </span>
+        <span class="sc-score-val" :class="scoreClass">
+          {{ store.scorecard.total > 0 ? '+' : '' }}{{ store.scorecard.total }}
+        </span>
+      </div>
+
+      <!-- Center Bar (1.5x width of total side areas) -->
+      <div class="sc-single-wrap sc-center-bar">
         <div class="sc-track">
           <!-- Center divider -->
           <div class="sc-center-mark"></div>
@@ -15,13 +25,16 @@
             :style="fillStyle"
           ></div>
         </div>
-        <!-- Score number pinned to centre -->
-        <div class="sc-score-center" :class="scoreClass">
-          {{ store.scorecard.total > 0 ? '+' : '' }}{{ store.scorecard.total }}
-        </div>
       </div>
 
-      <!-- Right: signal breakdown tooltip -->
+      <!-- Right Side (Ask Dominance) -->
+      <div class="sc-side-area sc-right-area">
+        <span class="sc-ratio-label text-red" title="Ask Depth Dominance">
+          {{ store.askRatio }}%
+        </span>
+      </div>
+
+    <!-- Right: signal breakdown tooltip -->
       <Teleport to="body">
         <div v-if="showScoreDetails && store.scorecard.signals.length" class="sc-tooltip mono">
           <div class="sc-tooltip-title">
@@ -40,7 +53,6 @@
             <span class="legend-item"><span class="dot dot-teal"></span> 15s vol: {{ store.scorecard.tapeDelta15s > 0 ? '+' : '' }}{{ store.scorecard.tapeDelta15s }}</span>
             <span class="legend-item"><span class="dot dot-blue"></span> 15s cnt: {{ store.scorecard.tapePressure15s > 0 ? '+' : '' }}{{ store.scorecard.tapePressure15s }}</span>
             <span class="legend-item"><span class="dot dot-gold"></span> ★: {{ store.scorecard.whaleAbsorption > 0 ? '+' : '' }}{{ store.scorecard.whaleAbsorption }}</span>
-            <span class="legend-item"><span class="dot dot-purple"></span> RF: {{ store.scorecard.roundFigureCtx > 0 ? '+' : '' }}{{ store.scorecard.roundFigureCtx }}</span>
             <span class="legend-item"><span class="dot dot-gray"></span> DP: {{ store.scorecard.darkPool > 0 ? '+' : '' }}{{ store.scorecard.darkPool }}</span>
           </div>
         </div>
@@ -60,20 +72,10 @@
             :key="'bid-' + row.price + '-' + idx"
             class="book-row bid-row"
             :class="[
-              row.hasBorder ? 'row-floor-highlight' : '',
-              row.roundFigure ? `rf-${row.roundFigure.level}` : ''
+              idx < 9 ? `row-tier-${idx}` : 'row-tier-default',
+              row.hasBorder ? 'row-floor-highlight' : ''
             ]"
           >
-            <span v-if="row.hasIcon" class="block-badge block-badge-bid">⚡</span>
-            <!-- Round Figure Badge -->
-            <span 
-              v-if="row.roundFigure" 
-              class="rf-badge" 
-              :class="`rf-badge-${row.roundFigure.level}`"
-              :title="`Round Figure — $${row.roundFigure.step} level`"
-            >
-              {{ row.roundFigure.level === 'key' ? '◆' : (row.roundFigure.level === 'major' ? '●' : '·') }}
-            </span>
             <!-- Inline Cumulative Depth Fill Bar Container -->
             <div class="depth-bar-container bid-depth-container">
               <div 
@@ -83,13 +85,13 @@
             </div>
 
             <div class="row-content bid-row-content">
-              <span 
-                class="col-size" 
-                :class="getSizeClasses(row.size)"
-              >
-                {{ formatNum(row.size) }}
+              <span class="col-size bid-size">
+                <span class="size-val">{{ formatNum(row.size) }}</span>
+                <span v-if="row.hasIcon" class="block-badge block-badge-bid" title="Whale Block">⚡</span>
               </span>
-              <span class="col-price text-green font-bold">{{ row.price.toFixed(2) }}</span>
+              <div class="col-price-box">
+                {{ formatPrice(row.price) }}
+              </div>
             </div>
           </div>
 
@@ -108,20 +110,10 @@
             :key="'ask-' + row.price + '-' + idx"
             class="book-row ask-row"
             :class="[
-              row.hasBorder ? 'row-wall-highlight' : '',
-              row.roundFigure ? `rf-${row.roundFigure.level}` : ''
+              idx < 9 ? `row-tier-${idx}` : 'row-tier-default',
+              row.hasBorder ? 'row-wall-highlight' : ''
             ]"
           >
-            <span v-if="row.hasIcon" class="block-badge block-badge-ask">⚡</span>
-            <!-- Round Figure Badge -->
-            <span 
-              v-if="row.roundFigure" 
-              class="rf-badge" 
-              :class="`rf-badge-${row.roundFigure.level}`"
-              :title="`Round Figure — $${row.roundFigure.step} level`"
-            >
-              {{ row.roundFigure.level === 'key' ? '◆' : (row.roundFigure.level === 'major' ? '●' : '·') }}
-            </span>
             <!-- Inline Cumulative Depth Fill Bar Container -->
             <div class="depth-bar-container ask-depth-container">
               <div 
@@ -131,12 +123,12 @@
             </div>
 
             <div class="row-content ask-row-content">
-              <span class="col-price text-red font-bold">{{ row.price.toFixed(2) }}</span>
-              <span 
-                class="col-size" 
-                :class="getSizeClasses(row.size)"
-              >
-                {{ formatNum(row.size) }}
+              <div class="col-price-box">
+                {{ formatPrice(row.price) }}
+              </div>
+              <span class="col-size ask-size">
+                <span v-if="row.hasIcon" class="block-badge block-badge-ask" title="Whale Block">⚡</span>
+                <span class="size-val">{{ formatNum(row.size) }}</span>
               </span>
             </div>
           </div>
@@ -200,9 +192,8 @@ const nearAskRatio = computed(() => 100 - nearBidRatio.value);
 
 function formatLots(num) {
   if (!num || isNaN(num)) return '0';
-  const lots = Math.floor(num / 100);
-  if (lots >= 1000) return (lots / 1000).toFixed(1) + 'K';
-  return lots.toString();
+  const lots = Math.round(num / 100);
+  return (lots === 0 && num > 0 ? 1 : lots).toLocaleString();
 }
 
 // ── Spoofing detector (unchanged) ────────────────────────────────────────
@@ -250,6 +241,13 @@ watch(() => store.displayedAsks, (newAsks) => {
 
 
 
+function formatPrice(price) {
+  if (price === undefined || price === null || isNaN(price)) return '--';
+  return Number(price).toFixed(2);
+}
+
+
+
 function formatNum(num) {
   if (num === undefined || num === null || isNaN(num)) return '0';
   return formatLots(num);
@@ -264,14 +262,6 @@ function formatSizeK(size) {
   return size.toString();
 }
 
-function getSizeClasses(size) {
-  if (size === undefined || size === null || isNaN(size)) return 'size-1-digit';
-  const lots = Math.floor(size / 100);
-  if (lots >= 100) return 'size-3-digit text-gold'; // 3+ digits
-  if (lots >= 10) return 'size-2-digit';            // 2 digits
-  return 'size-1-digit';                            // 1 digit
-}
-
 </script>
 
 <style scoped>
@@ -280,24 +270,58 @@ function getSizeClasses(size) {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  background: #0d0d0d;
+  border: 1px solid #202020;
   transition: border 0.2s ease, box-shadow 0.2s ease;
 }
 
 .intel-top-bar {
   display: flex;
-  justify-content: center;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 6px;
   height: 28px;
   box-sizing: border-box;
-  background: linear-gradient(180deg, #161f30 0%, #0c121e 100%);
-  border-bottom: 2px solid #38bdf8;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  background: #111214;
+  border-bottom: 1px solid #202020;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
   flex-shrink: 0;
   cursor: default;
+}
+
+.sc-side-area {
+  flex: 1; /* 1 part */
+  display: flex;
+  align-items: center;
+}
+
+.sc-left-area {
+  justify-content: space-between;
+  padding-right: 12px;
+}
+
+.sc-right-area {
+  justify-content: flex-end;
+  padding-left: 12px;
+}
+
+.sc-ratio-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: -0.2px;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+
+.sc-score-val {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  transition: color 0.3s;
+}
+
+.sc-center-bar {
+  flex: 3; /* 3 parts (which is 1.5x of the combined 2 parts of left+right) */
 }
 
 /* Single centered bar */
@@ -350,19 +374,7 @@ function getSizeClasses(size) {
   box-shadow: 0 0 8px rgba(255, 59, 86, 0.5);
 }
 
-/* Score number floated over the centre of the bar */
-.sc-score-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 11px;
-  font-weight: 900;
-  letter-spacing: -0.5px;
-  pointer-events: none;
-  z-index: 5;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-  transition: color 0.3s;
-}
+
 
 .score-strong-bull { color: #00d084; text-shadow: 0 0 10px rgba(0,208,132,0.8), 0 1px 3px rgba(0,0,0,0.9); }
 .score-bull        { color: #00d084; text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
@@ -487,6 +499,7 @@ function getSizeClasses(size) {
   flex: 1;
   overflow: hidden;
   height: 100%;
+  background: #0d0d0d;
 }
 
 /* ============================================================ */
@@ -570,70 +583,98 @@ function getSizeClasses(size) {
 }
 
 .bids-half {
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid #202020;
 }
-
-
 
 .table-body {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  background: #0d0d0d;
+}
+
+.table-body::-webkit-scrollbar {
+  width: 4px;
+}
+.table-body::-webkit-scrollbar-track {
+  background: #0d0d0d;
+}
+.table-body::-webkit-scrollbar-thumb {
+  background: #2a2b2f;
+  border-radius: 2px;
 }
 
 .book-row {
   position: relative;
-  height: 32px;
+  height: 23px;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid #202020;
   border-left: 3px solid transparent;
   border-right: 3px solid transparent;
-  transition: background-color 0.15s ease;
+  box-sizing: border-box;
+  background-color: #0d0d0d;
+  transition: filter 0.15s ease;
+}
+
+/* Tiered row background levels matching reference L2 price levels */
+.book-row.row-tier-0 { background-color: #28292b; }
+.book-row.row-tier-1 { background-color: #1e1e20; }
+.book-row.row-tier-2 { background-color: #161718; }
+.book-row.row-tier-3,
+.book-row.row-tier-4,
+.book-row.row-tier-5,
+.book-row.row-tier-6,
+.book-row.row-tier-7,
+.book-row.row-tier-8,
+.book-row.row-tier-default {
+  background-color: #0d0d0d;
 }
 
 .book-row:hover {
-  background-color: rgba(255, 255, 255, 0.05);
+  filter: brightness(1.18);
 }
 
 .big-wall {
-  border-left: 3px solid var(--gold-block);
+  border-left: 3px solid rgba(250, 204, 21, 0.45);
 }
 
 .depth-bar-container {
   position: absolute;
-  top: 1px;
-  bottom: 1px;
+  top: 0;
+  bottom: 0;
   pointer-events: none;
+  z-index: 1;
 }
 
 .bid-depth-container {
   left: 0;
-  right: 52px;
+  right: 38px;
 }
 
 .ask-depth-container {
+  left: 38px;
   right: 0;
-  left: 52px;
 }
 
 .depth-bar {
   position: absolute;
   top: 0;
   bottom: 0;
-  transition: width 0.15s ease;
+  transition: width 0.2s cubic-bezier(0.22, 1, 0.36, 1);
   border-radius: 0;
   box-shadow: none;
 }
 
+/* Overlay bg matching requested color */
 .bid-depth-bar {
-  left: 0;
-  background: rgba(0, 255, 136, 0.12);
+  right: 0;
+  background: rgb(52, 62, 72);
 }
 
 .ask-depth-bar {
-  right: 0;
-  background: rgba(255, 59, 86, 0.12);
+  left: 0;
+  background: rgb(52, 62, 72);
 }
 
 .row-content {
@@ -643,30 +684,72 @@ function getSizeClasses(size) {
   width: 100%;
   padding: 0 4px;
   align-items: center;
+  height: 100%;
 }
 
 .bid-row-content {
   justify-content: space-between;
+  padding-left: 4px;
+  padding-right: 0;
 }
 
 .ask-row-content {
   justify-content: space-between;
+  padding-left: 0;
+  padding-right: 4px;
 }
 
 .col-size {
-  font-size: 15px;
-  font-weight: 800;
-  display: flex;
+  font-family: var(--font-mono), Consolas, monospace;
+  font-size: 13px;
+  font-weight: 500;
+  color: #D1D5DB;
+  letter-spacing: -0.2px;
+  z-index: 2;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+
+.bid-size {
+  padding-left: 8px;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.ask-size {
+  padding-right: 8px;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.col-price-box {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  min-width: 50px;
+  background: rgba(67, 68, 71, 0.25);
+  border: 1px solid rgba(78, 79, 82, 0.35);
+  border-radius: 2px;
+  padding: 0 3px;
+  min-width: 36px;
+  height: 16px;
+  box-sizing: border-box;
+  font-family: var(--font-mono), Consolas, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: #D1D5DB;
+  text-align: center;
+  z-index: 2;
+  user-select: none;
+  line-height: 1;
+  margin: 0;
 }
 
 .col-price {
-  font-size: 15.5px;
-  font-weight: 800;
+  font-size: 11.5px;
+  font-weight: 500;
   min-width: fit-content;
+  color: #D1D5DB;
 }
 .bid-row-content .col-price {
   text-align: right;
@@ -688,7 +771,6 @@ function getSizeClasses(size) {
 
 .size-3-digit {
   opacity: 1;
-  animation: size-pulse-anim 1.5s infinite;
 }
 
 .size-2-digit {
@@ -696,13 +778,7 @@ function getSizeClasses(size) {
 }
 
 .size-1-digit {
-  opacity: 0.45;
-}
-
-@keyframes size-pulse-anim {
-  0% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); transform: scale(1); }
-  50% { text-shadow: 0 0 8px currentColor; transform: scale(1.05); }
-  100% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); transform: scale(1); }
+  opacity: 1;
 }
 
 .wall-floor-chip {
@@ -715,49 +791,46 @@ function getSizeClasses(size) {
 }
 
 .floor-chip {
-  background: rgba(250, 204, 21, 0.22);
-  color: #facc15;
-  border: 1px solid rgba(250, 204, 21, 0.5);
+  background: rgba(250, 204, 21, 0.15);
+  color: rgba(250, 204, 21, 0.85);
+  border: 1px solid rgba(250, 204, 21, 0.45);
 }
 
 .wall-chip {
-  background: rgba(250, 204, 21, 0.22);
-  color: #facc15;
-  border: 1px solid rgba(250, 204, 21, 0.5);
+  background: rgba(250, 204, 21, 0.15);
+  color: rgba(250, 204, 21, 0.85);
+  border: 1px solid rgba(250, 204, 21, 0.45);
 }
 
 .row-floor-highlight {
-  border-left: 3px solid #facc15 !important;
+  border-left: 3px solid rgba(250, 204, 21, 0.45) !important;
 }
 
 .row-wall-highlight {
-  border-right: 3px solid #facc15 !important;
+  border-right: 3px solid rgba(250, 204, 21, 0.45) !important;
 }
 
 .block-badge {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
-  font-weight: 900;
-  color: #facc15;
+  font-size: 11px;
+  line-height: 1;
+  color: #fbbf24;
+  opacity: 0.85;
   background: transparent;
   border: none;
-  text-shadow: 0 0 8px rgba(250, 204, 21, 0.5);
+  filter: drop-shadow(0 0 3px rgba(245, 158, 11, 0.45));
   animation: pulse-block-anim 1.5s infinite;
   z-index: 5;
+  flex-shrink: 0;
+  user-select: none;
 }
 
-.block-badge-bid { left: 2px; }
-.block-badge-ask { right: 2px; }
-
 @keyframes pulse-block-anim {
-  0% { transform: translateY(-50%) scale(0.95); text-shadow: 0 0 4px rgba(250, 204, 21, 0.4); }
-  50% { transform: translateY(-50%) scale(1.15); text-shadow: 0 0 12px rgba(250, 204, 21, 0.8); }
-  100% { transform: translateY(-50%) scale(0.95); text-shadow: 0 0 4px rgba(250, 204, 21, 0.4); }
+  0% { transform: scale(0.95); opacity: 0.75; }
+  50% { transform: scale(1.1); opacity: 0.95; filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.55)); }
+  100% { transform: scale(0.95); opacity: 0.75; }
 }
 
 .empty-state {
@@ -767,67 +840,4 @@ function getSizeClasses(size) {
   font-size: 12px;
 }
 
-/* ============================================================ */
-/* ROUND FIGURE LEVELS (Price-Aware S/R Zones)                  */
-/* ============================================================ */
-
-/* Key level: whole-number anchors ($5, $10, $50, $100…)        */
-.rf-key {
-  background: rgba(250, 204, 21, 0.07) !important;
-  border-top: 1px dashed rgba(250, 204, 21, 0.55) !important;
-}
-.rf-key .col-price {
-  text-shadow: 0 0 8px rgba(250, 204, 21, 0.45);
-}
-
-/* Major level: half/quarter-dollar steps for the price tier    */
-.rf-major {
-  background: rgba(56, 189, 248, 0.05) !important;
-  border-top: 1px dashed rgba(56, 189, 248, 0.30) !important;
-}
-.rf-major .col-price {
-  text-shadow: 0 0 6px rgba(56, 189, 248, 0.30);
-}
-
-/* Minor level: very subtle dotted separator only               */
-.rf-minor {
-  border-top: 1px dotted rgba(255, 255, 255, 0.12) !important;
-}
-
-/* Badges (right-aligned inside the bid/ask row)                */
-.rf-badge {
-  position: absolute;
-  right: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 10px;
-  font-weight: 900;
-  line-height: 1;
-  z-index: 6;
-  pointer-events: none;
-  opacity: 0.85;
-}
-
-/* Bid side: badge on the LEFT of the price column */
-.bid-row .rf-badge {
-  left: 2px;
-  right: auto;
-}
-
-.rf-badge-key {
-  color: #facc15;
-  text-shadow: 0 0 6px rgba(250, 204, 21, 0.7);
-  font-size: 12px;
-}
-
-.rf-badge-major {
-  color: #38bdf8;
-  text-shadow: 0 0 5px rgba(56, 189, 248, 0.5);
-}
-
-.rf-badge-minor {
-  color: rgba(255, 255, 255, 0.35);
-  font-size: 14px;
-  font-weight: 400;
-}
 </style>

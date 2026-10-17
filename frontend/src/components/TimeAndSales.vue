@@ -6,10 +6,10 @@
   >
 
 
-    <!-- Tape Table Header -->
-    <div class="tape-table-header mono">
+    <!-- Tape Table Header (Level 1 Quote) -->
+    <div class="tape-table-header l1-header mono">
       <div v-if="isPaused" class="pause-overlay">
-        <span>PAUSED (Sizes /100)</span>
+        <span>PAUSED</span>
         
         <div class="filter-icon-wrap" @click="showSizeFilter = !showSizeFilter" title="Filter trades by minimum size">
           <svg class="filter-icon" viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -29,18 +29,14 @@
         </div>
       </div>
       
-      <div class="col-size col-size-th">
-        <div class="size-title-wrap">
-          <span style="font-size: 8px;">SIZE</span>
-          <span v-if="store.tapeMinSize > 0" class="active-filter-badge">
-            &ge;{{ formatNum(store.tapeMinSize) }}
-          </span>
-        </div>
+      <div class="l1-bid">
+        {{ bestBid ? bestBid.price.toFixed(2) : '--.--' }}
       </div>
-
-      <div class="col-price-th">
-        <span>PRICE</span>
-        <span class="spread-chip" v-if="store.spread > 0">[{{ Math.round(store.spread * 100) }}]</span>
+      <div class="l1-spread">
+        {{ Math.round(store.spread * 100) }}
+      </div>
+      <div class="l1-ask">
+        {{ bestAsk ? bestAsk.price.toFixed(2) : '--.--' }}
       </div>
     </div>
 
@@ -76,13 +72,8 @@
             </span>
           </span>
           
-          <!-- Price: Always reflects original side (Green for BUY, Red for SELL) -->
-          <span 
-            class="col-price font-bold" 
-            :class="[
-              tick.side === 'BUY' ? 'text-green text-glow-green' : (tick.side === 'SELL' ? 'text-red text-glow-red' : 'text-mid')
-            ]"
-          >
+          <!-- Price: Always white -->
+          <span class="col-price font-bold text-white">
             {{ tick.price.toFixed(2) }}
           </span>
         </div>
@@ -160,13 +151,12 @@ function formatTime(timeStr) {
 }
 
 function formatLots(num) {
-  const lotSize = 100;
-  if (num < lotSize) return '0';
-  const lots = Math.floor(num / lotSize);
-  return lots.toLocaleString();
+  if (!num || isNaN(num)) return '0';
+  const lots = Math.round(num / 100);
+  return (lots === 0 && num > 0 ? 1 : lots).toLocaleString();
 }
 
-// Format numbers using lots
+// Format numbers
 function formatNum(num) {
   if (num === undefined || num === null || isNaN(num)) return '0';
   return formatLots(num);
@@ -174,10 +164,9 @@ function formatNum(num) {
 
 function getSizeClasses(size) {
   if (size === undefined || size === null || isNaN(size)) return 'size-1-digit';
-  const lots = Math.floor(size / 100);
-  if (lots >= 100) return 'size-3-digit'; // 3+ digits
-  if (lots >= 10) return 'size-2-digit';  // 2 digits
-  return 'size-1-digit';                  // 1 digit
+  if (size >= 10000) return 'size-3-digit'; // 5+ digits
+  if (size >= 1000) return 'size-2-digit';  // 4 digits
+  return 'size-1-digit';
 }
 </script>
 
@@ -188,7 +177,7 @@ function getSizeClasses(size) {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.6);
+  background: #0d0d0d;
 }
 
 .panel-header {
@@ -489,9 +478,8 @@ function getSizeClasses(size) {
 /* ======================================================== */
 .tape-table-header {
   position: relative;
-  display: grid;
-  grid-template-columns: 1fr 65px;
-  padding: 8px 7px 8px 12px;
+  display: flex;
+  padding: 0;
   height: 36px;
   box-sizing: border-box;
   font-size: 10px;
@@ -504,10 +492,57 @@ function getSizeClasses(size) {
   align-items: center;
 }
 
+.l1-bid, .l1-ask, .l1-spread {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.l1-bid {
+  flex: 1;
+  background: rgba(0, 208, 132, 0.15);
+  color: #00d084;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.l1-ask {
+  flex: 1;
+  background: rgba(255, 59, 86, 0.15);
+  color: #ff3b56;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.l1-spread {
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #facc15;
+  font-size: 13px;
+  font-weight: 900;
+}
+
 .tape-list {
   flex: 1;
   overflow-y: auto;
   position: relative;
+  scrollbar-gutter: stable;
+  background: #0d0d0d;
+}
+
+.tape-list::-webkit-scrollbar {
+  width: 4px;
+}
+.tape-list::-webkit-scrollbar-track {
+  background: #0d0d0d;
+}
+.tape-list::-webkit-scrollbar-thumb {
+  background: #2a2b2f;
+  border-radius: 2px;
+}
+.tape-list::-webkit-scrollbar-thumb:hover {
+  background: #38bdf8;
 }
 
 .tape-stream {
@@ -517,15 +552,16 @@ function getSizeClasses(size) {
 
 .tape-item {
   display: grid;
-  grid-template-columns: 1fr 65px;
-  align-items: center;
-  padding: 4px 7px 4px 12px;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: stretch;
+  padding: 0;
   height: 32px;
   box-sizing: border-box;
   border-left: 4px solid transparent;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   transition: background-color 0.15s ease;
   position: relative;
+  overflow: hidden;
 }
 
 .tape-item:hover {
@@ -537,34 +573,57 @@ function getSizeClasses(size) {
   font-size: 11.5px;
 }
 
-.col-price {
-  text-align: left;
-  font-size: 15.5px;
+.col-size {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  overflow: hidden;
+  height: 100%;
+  padding-left: 6px;
+  padding-right: 10px;
+  gap: 8px;
+  font-size: 14.5px;
   font-weight: 800;
-  padding-right: 8px;
 }
 
-.col-size {
-  text-align: left;
-  font-size: 15px;
-  font-weight: 800;
+.col-price {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 8px;
+  padding-right: 6px;
+  height: 100%;
+  border-left: 1px solid #202020;
+  font-size: 15.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: #ffffff;
 }
 
 .thunder-container {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  width: 20px;
-  justify-content: flex-start;
+  justify-content: center;
+  width: 18px;
+  min-width: 18px;
+  max-width: 18px;
+  height: 100%;
+  flex-shrink: 0;
 }
 
 .size-val-container {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: flex-end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .col-side {
@@ -643,9 +702,9 @@ function getSizeClasses(size) {
 }
 
 @keyframes size-pulse-anim {
-  0% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); transform: scale(1); }
-  50% { text-shadow: 0 0 8px currentColor; transform: scale(1.05); }
-  100% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); transform: scale(1); }
+  0% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); }
+  50% { text-shadow: 0 0 8px currentColor, 0 0 14px currentColor; }
+  100% { text-shadow: 0 0 2px rgba(255, 255, 255, 0); }
 }
 
 .row-buy {
@@ -664,7 +723,6 @@ function getSizeClasses(size) {
 .row-block-buy {
   background: transparent !important;
   border-left: 4px solid #00d084 !important;
-  font-weight: 800;
 }
 
 .row-block-buy:hover {
@@ -674,7 +732,6 @@ function getSizeClasses(size) {
 .row-block-sell {
   background: transparent !important;
   border-left: 4px solid #ff3b56 !important;
-  font-weight: 800;
 }
 
 .row-block-sell:hover {
@@ -683,6 +740,7 @@ function getSizeClasses(size) {
 
 .row-block-mid {
   background: transparent !important;
+  border-left: 4px solid #f8fafc !important;
 }
 
 /* Distinctive Gold Box Badge for Thunder ⚡ Icon */
@@ -690,13 +748,13 @@ function getSizeClasses(size) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px; /* Slightly larger icon */
-  font-weight: 900;
+  font-size: 11px;
+  line-height: 1;
   color: #facc15;
   background: transparent;
   border: none;
-  margin-right: 4px;
-  text-shadow: 0 0 8px rgba(250, 204, 21, 0.5);
+  margin: 0;
+  text-shadow: 0 0 6px rgba(250, 204, 21, 0.6);
   animation: pulse-block 1.5s infinite;
 }
 

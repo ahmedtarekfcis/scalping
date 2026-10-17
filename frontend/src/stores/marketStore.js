@@ -23,6 +23,9 @@ export const useMarketStore = defineStore('market', {
     spread: 0,
     spreadPct: 0,
     medianLevelSize: 100,
+    overlayScope: { maxBidSize: 1, maxAskSize: 1 },
+    smoothedMaxBidSize: 0,
+    smoothedMaxAskSize: 0,
     
     // Header Stats
     lastPrice: null,
@@ -174,7 +177,11 @@ export const useMarketStore = defineStore('market', {
         case 'STATUS_UPDATE':
           this.status = { ...this.status, ...msg.data };
           if (msg.data.activeSymbol) {
-            this.symbol = msg.data.activeSymbol;
+            if (this.symbol !== msg.data.activeSymbol) {
+              this.symbol = msg.data.activeSymbol;
+              this.smoothedMaxBidSize = 0;
+              this.smoothedMaxAskSize = 0;
+            }
           }
           break;
 
@@ -412,22 +419,44 @@ export const useMarketStore = defineStore('market', {
       const maxDepth = Math.max(bidCum, askCum, 1);
       this.maxCumulativeDepth = maxDepth;
 
-      // Find the largest size across all rows
-      const allSizes = [
-        ...(data.bids || []).map(bid => bid.size),
-        ...(data.asks || []).map(ask => ask.size)
-      ];
-      const maxSize = Math.max(...allSizes, 1);
+      // Calculate separate maximum size for Bids and Asks independently (no price range restriction)
+      let currentMaxBid = 1;
+      for (const bid of processedBids) {
+        if (bid.size > currentMaxBid) currentMaxBid = bid.size;
+      }
 
-      // Calculate depth bar percentages (Linear Row Size)
+      let currentMaxAsk = 1;
+      for (const ask of processedAsks) {
+        if (ask.size > currentMaxAsk) currentMaxAsk = ask.size;
+      }
+
+      // Apply independent exponential smoothing: prev * 0.7 + current * 0.3
+      if (!this.smoothedMaxBidSize || this.smoothedMaxBidSize <= 1) {
+        this.smoothedMaxBidSize = currentMaxBid;
+      } else {
+        this.smoothedMaxBidSize = (this.smoothedMaxBidSize * 0.7) + (currentMaxBid * 0.3);
+      }
+
+      if (!this.smoothedMaxAskSize || this.smoothedMaxAskSize <= 1) {
+        this.smoothedMaxAskSize = currentMaxAsk;
+      } else {
+        this.smoothedMaxAskSize = (this.smoothedMaxAskSize * 0.7) + (currentMaxAsk * 0.3);
+      }
+
+      const effectiveMaxBid = Math.max(1, this.smoothedMaxBidSize);
+      const effectiveMaxAsk = Math.max(1, this.smoothedMaxAskSize);
+
+      this.overlayScope = { maxBidSize: Math.round(effectiveMaxBid), maxAskSize: Math.round(effectiveMaxAsk) };
+
+      // Calculate depth bar percentages separated: Bids relative to smoothedMaxBidSize, Asks relative to smoothedMaxAskSize
       this.bids = processedBids.map((b) => ({
         ...b,
-        percent: Math.min(100, (b.size / maxSize) * 100)
+        percent: Math.min(100, (b.size / effectiveMaxBid) * 100)
       }));
 
       this.asks = processedAsks.map((a) => ({
         ...a,
-        percent: Math.min(100, (a.size / maxSize) * 100)
+        percent: Math.min(100, (a.size / effectiveMaxAsk) * 100)
       }));
 
       // Calculate spread
@@ -528,6 +557,9 @@ export const useMarketStore = defineStore('market', {
       this.trackedWhales = {};
       this.tapeRolling = { buy15s: [], sell15s: [] };
       this.dpRolling   = { buy15s: [], sell15s: [] };
+      this.overlayScope = { maxBidSize: 1, maxAskSize: 1 };
+      this.smoothedMaxBidSize = 0;
+      this.smoothedMaxAskSize = 0;
       this.scorecard = { total: 0, l2Imbalance: 0, tapeDelta15s: 0, tapePressure15s: 0, whaleAbsorption: 0, roundFigureCtx: 0, darkPool: 0, signals: [] };
       this.currentMinIndex = -1;
       this.currentVol1m = 0;

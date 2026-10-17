@@ -9,6 +9,7 @@ const dailyStats = ref({});
 const minDate = ref(null);
 const maxDate = ref(null);
 const expandedRows = ref({});
+const expandedWeeks = ref({});
 const filterStartDate = ref('');
 const filterEndDate = ref('');
 
@@ -17,9 +18,11 @@ const DEFAULT_COLUMNS = [
   { id: 'totalTrades', label: 'Trades', visible: true, order: 1 },
   { id: 'wins', label: 'Win', visible: true, order: 2 },
   { id: 'losses', label: 'Loss', visible: true, order: 3 },
-  { id: 'avgWin', label: 'Avg W per Trade', visible: true, order: 4 },
-  { id: 'avgLoss', label: 'Avg L per Trade', visible: true, order: 5 },
-  { id: 'tickersSummary', label: 'Tickers PnL', visible: true, order: 6 }
+  { id: 'netPnL', label: 'Net PnL ($)', visible: true, order: 4 },
+  { id: 'netPnLPct', label: 'Net PnL (%)', visible: true, order: 5 },
+  { id: 'avgWin', label: 'Avg W per Trade', visible: true, order: 6 },
+  { id: 'avgLoss', label: 'Avg L per Trade', visible: true, order: 7 },
+  { id: 'tickersSummary', label: 'Tickers PnL', visible: true, order: 8 }
 ];
 
 let initialCols = DEFAULT_COLUMNS;
@@ -27,7 +30,8 @@ try {
   const savedColsStr = localStorage.getItem('tradeStatsCols');
   if (savedColsStr) {
     const parsed = JSON.parse(savedColsStr);
-    if (parsed.some(c => c.id === 'totalPnL' || c.id === 'netPnL' || c.id === 'dayRet') || !parsed.some(c => c.id === 'tickersSummary')) {
+    const hasNewCols = parsed.some(c => c.id === 'netPnL') && parsed.some(c => c.id === 'netPnLPct');
+    if (!hasNewCols || !parsed.some(c => c.id === 'tickersSummary')) {
       localStorage.removeItem('tradeStatsCols');
     } else {
       initialCols = parsed.map(c => {
@@ -446,24 +450,86 @@ const dailyRows = computed(() => {
       losses: s.losses,
       avgWin,
       avgLoss,
+      totalPnL: s.totalPnL,
+      totalCostBasis: s.totalCostBasis,
+      netPnL: s.totalPnL,
+      netPnLPct: s.totalCostBasis > 0 ? (s.totalPnL / s.totalCostBasis) * 100 : 0,
       flattenedTrades,
       tickersList
     };
   });
 });
 
+const weeklyRows = computed(() => {
+  const weeks = [];
+  let currentWeek = null;
+  
+  dailyRows.value.forEach(day => {
+    const d = new Date(day.dateStr);
+    const dayOfWeek = d.getUTCDay();
+    const diff = d.getUTCDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    const monday = new Date(d);
+    monday.setUTCDate(diff);
+    const weekStartStr = `${monday.getUTCFullYear()}-${String(monday.getUTCMonth()+1).padStart(2,'0')}-${String(monday.getUTCDate()).padStart(2,'0')}`;
+    
+    if (!currentWeek || currentWeek.weekStartStr !== weekStartStr) {
+      const sunday = new Date(monday);
+      sunday.setUTCDate(monday.getUTCDate() + 6);
+      const formatOpts = { timeZone: 'UTC', day: 'numeric', month: 'short' };
+      const weekDisplay = `${monday.toLocaleDateString('en-GB', formatOpts)} - ${sunday.toLocaleDateString('en-GB', formatOpts)}`;
+      
+      currentWeek = {
+        isWeek: true,
+        weekStartStr,
+        displayDate: weekDisplay,
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        totalPnL: 0,
+        totalCostBasis: 0,
+        days: []
+      };
+      weeks.push(currentWeek);
+    }
+    
+    if (!day.isEmpty) {
+      currentWeek.totalTrades += day.totalTrades;
+      currentWeek.wins += day.wins;
+      currentWeek.losses += day.losses;
+      currentWeek.totalPnL += day.totalPnL || 0;
+      currentWeek.totalCostBasis += day.totalCostBasis || 0;
+    }
+    
+    currentWeek.days.push(day);
+  });
+  
+  weeks.forEach(w => {
+    w.netPnL = w.totalPnL;
+    w.netPnLPct = w.totalCostBasis > 0 ? (w.totalPnL / w.totalCostBasis) * 100 : 0;
+    w.isEmpty = w.totalTrades === 0;
+  });
+  
+  return weeks;
+});
+
 const getColClass = (colId, row) => {
   if (colId === 'wins' || colId === 'avgWin') return 'text-win';
   if (colId === 'losses' || colId === 'avgLoss') return 'text-loss';
+  if (colId === 'netPnL' || colId === 'netPnLPct') {
+    if (row[colId] > 0) return 'text-win';
+    if (row[colId] < 0) return 'text-loss';
+  }
   return '';
 };
 
 const getColStyle = (colId) => {
   const widths = {
-    dateStr: '110px',
-    totalTrades: '80px',
+    dateStr: '220px',
+    totalTrades: '70px',
     wins: '60px',
     losses: '60px',
+    netPnL: '100px',
+    netPnLPct: '100px',
     avgWin: '120px',
     avgLoss: '120px',
     tickersSummary: 'auto'
@@ -485,6 +551,10 @@ const getTickerPnLPct = (tickerData) => {
 // UI Actions
 const toggleRow = (dateStr) => {
   expandedRows.value[dateStr] = !expandedRows.value[dateStr];
+};
+
+const toggleWeek = (weekStartStr) => {
+  expandedWeeks.value[weekStartStr] = !expandedWeeks.value[weekStartStr];
 };
 </script>
 
@@ -550,7 +620,7 @@ const toggleRow = (dateStr) => {
               </tr>
             </thead>
             <tbody>
-              <tr v-if="dailyRows.length === 0" class="empty-state-row">
+              <tr v-if="weeklyRows.length === 0" class="empty-state-row">
                 <td :colspan="visibleColumns.length || 1">
                   <div class="empty-state">
                     <FileSpreadsheet class="empty-icon" />
@@ -560,75 +630,113 @@ const toggleRow = (dateStr) => {
               </tr>
               
               <template v-else>
-                <template v-for="row in dailyRows" :key="row.dateStr">
-                  <tr 
-                    :class="{ 'row-weekend': row.isWeekend, 'row-empty': row.isEmpty && !row.isWeekend, 'row-expanded': expandedRows[row.dateStr] }"
-                    @click="!row.isEmpty ? toggleRow(row.dateStr) : null"
-                  >
-                    <template v-if="row.isEmpty">
-                      <td v-if="visibleColumns.length > 0"><strong>{{ row.displayDate }}</strong></td>
-                      <td v-if="visibleColumns.length > 1" :colspan="visibleColumns.length - 1" class="text-center text-muted">
-                      </td>
-                    </template>
-                    <template v-else>
-                      <td v-for="col in visibleColumns" :key="col.id" :class="getColClass(col.id, row)">
-                        <template v-if="col.id === 'dateStr'"><strong>{{ row.displayDate }}</strong></template>
-                        <template v-else-if="col.id === 'totalTrades'">{{ row.totalTrades }}</template>
-                        <template v-else-if="col.id === 'wins'">{{ row.wins }}</template>
-                        <template v-else-if="col.id === 'losses'">{{ row.losses }}</template>
-                        <template v-else-if="col.id === 'avgWin'">{{ row.avgWin.toFixed(2) }}%</template>
-                        <template v-else-if="col.id === 'avgLoss'">{{ row.avgLoss.toFixed(2) }}%</template>
-                        <template v-else-if="col.id === 'tickersSummary'">
-                          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                            <span v-for="t in row.tickersList" :key="t.symbol" 
-                                  class="ticker-tag"
-                                  :class="t.pct >= 0 ? 'tag-win' : 'tag-loss'">
-                              {{ t.symbol }} {{ t.pct >= 0 ? '+' : '' }}{{ t.pct.toFixed(2) }}%
-                            </span>
-                          </div>
-                        </template>
-                      </td>
-                    </template>
+                <template v-for="week in weeklyRows" :key="week.weekStartStr">
+                  <!-- Week Row -->
+                  <tr class="row-week" :class="{ 'row-empty': week.isEmpty, 'row-expanded': expandedWeeks[week.weekStartStr] }"
+                      @click="!week.isEmpty ? toggleWeek(week.weekStartStr) : null">
+                    <td v-for="col in visibleColumns" :key="col.id" :class="getColClass(col.id, week)">
+                      <template v-if="col.id === 'dateStr'">
+                        <div class="week-date-cell">
+                          <ChevronDown v-if="expandedWeeks[week.weekStartStr] && !week.isEmpty" size="16" />
+                          <ChevronUp v-else-if="!week.isEmpty" size="16" />
+                          <span v-else style="width: 16px; display: inline-block;"></span>
+                          <strong>{{ week.displayDate }}</strong>
+                        </div>
+                      </template>
+                      <template v-else-if="col.id === 'totalTrades'">{{ week.totalTrades }}</template>
+                      <template v-else-if="col.id === 'wins'">{{ week.wins }}</template>
+                      <template v-else-if="col.id === 'losses'">{{ week.losses }}</template>
+                      <template v-else-if="col.id === 'netPnL'">
+                        <span v-if="!week.isEmpty">${{ week.netPnL >= 0 ? '' : '-' }}{{ Math.abs(week.netPnL).toFixed(2) }}</span>
+                      </template>
+                      <template v-else-if="col.id === 'netPnLPct'">
+                        <span v-if="!week.isEmpty">{{ week.netPnLPct >= 0 ? '+' : '' }}{{ week.netPnLPct.toFixed(2) }}%</span>
+                      </template>
+                    </td>
                   </tr>
-                  
-                  <tr v-if="expandedRows[row.dateStr]" class="expanded-detail-row">
-                    <td :colspan="visibleColumns.length">
-                      <div class="expanded-content">
-                        <div v-for="tickerGroup in row.tickersList" :key="tickerGroup.symbol" class="ticker-group">
-                          <div class="trades-grid">
-                            <div class="trade-block" v-for="trade in tickerGroup.trades" :key="trade.tradeId">
-                              <div class="trade-block-header">
-                                <div class="trade-title-group">
-                                  <h4>{{ trade.tradeId }}</h4>
-                                </div>
-                                <div class="trade-block-stats">
-                                  <span v-if="trade.isOpen" class="badge-open">OPEN</span>
-                                  <span :class="trade.pnl >= 0 ? 'text-win' : 'text-loss'" style="font-weight: 600;">
-                                    PnL: {{ trade.pnl >= 0 ? '+' : '' }}{{ trade.costBasis > 0 ? ((trade.pnl / trade.costBasis) * 100).toFixed(2) : '0.00' }}%
-                                  </span>
-                                </div>
+
+                  <!-- Days of the Week (if expanded) -->
+                  <template v-if="expandedWeeks[week.weekStartStr]">
+                    <template v-for="row in week.days" :key="row.dateStr">
+                      <tr 
+                        class="row-day"
+                        :class="{ 'row-weekend': row.isWeekend, 'row-empty': row.isEmpty && !row.isWeekend, 'row-expanded': expandedRows[row.dateStr] }"
+                        @click="!row.isEmpty ? toggleRow(row.dateStr) : null"
+                      >
+                        <template v-if="row.isEmpty">
+                          <td v-if="visibleColumns.length > 0"><div class="day-date-cell">{{ row.displayDate }}</div></td>
+                          <td v-if="visibleColumns.length > 1" :colspan="visibleColumns.length - 1" class="text-center text-muted">
+                          </td>
+                        </template>
+                        <template v-else>
+                          <td v-for="col in visibleColumns" :key="col.id" :class="getColClass(col.id, row)">
+                            <template v-if="col.id === 'dateStr'">
+                              <div class="day-date-cell">
+                                <ChevronDown v-if="expandedRows[row.dateStr]" size="14" class="day-chevron" />
+                                <ChevronUp v-else size="14" class="day-chevron" />
+                                <strong>{{ row.displayDate }}</strong>
                               </div>
-                              
-                              <div class="table-container" style="margin-top: 4px; padding: 0;">
-                                <table class="executions-table">
-                                  <tbody>
-                                    <tr v-for="(exec, idx) in trade.executions" :key="idx">
-                                      <td :class="exec.type === 'BUY' ? 'text-win' : 'text-loss'"><strong>{{ exec.type }}</strong></td>
-                                      <td>${{ exec.price.toFixed(3) }}</td>
-                                      <td v-if="exec.pnlPct !== undefined" :class="exec.pnlPct >= 0 ? 'text-win' : 'text-loss'" style="text-align: right; font-weight: 500;">
-                                        {{ exec.pnlPct >= 0 ? '+' : '' }}{{ exec.pnlPct.toFixed(2) }}%
-                                      </td>
-                                      <td v-else></td>
-                                    </tr>
-                                  </tbody>
-                                </table>
+                            </template>
+                            <template v-else-if="col.id === 'totalTrades'">{{ row.totalTrades }}</template>
+                            <template v-else-if="col.id === 'wins'">{{ row.wins }}</template>
+                            <template v-else-if="col.id === 'losses'">{{ row.losses }}</template>
+                            <template v-else-if="col.id === 'netPnL'">${{ row.netPnL >= 0 ? '' : '-' }}{{ Math.abs(row.netPnL).toFixed(2) }}</template>
+                            <template v-else-if="col.id === 'netPnLPct'">{{ row.netPnLPct >= 0 ? '+' : '' }}{{ row.netPnLPct.toFixed(2) }}%</template>
+                            <template v-else-if="col.id === 'avgWin'">{{ row.avgWin.toFixed(2) }}%</template>
+                            <template v-else-if="col.id === 'avgLoss'">{{ row.avgLoss.toFixed(2) }}%</template>
+                            <template v-else-if="col.id === 'tickersSummary'">
+                              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <span v-for="t in row.tickersList" :key="t.symbol" 
+                                      class="ticker-tag"
+                                      :class="t.pct >= 0 ? 'tag-win' : 'tag-loss'">
+                                  {{ t.symbol }} {{ t.pct >= 0 ? '+' : '' }}{{ t.pct.toFixed(2) }}%
+                                </span>
+                              </div>
+                            </template>
+                          </td>
+                        </template>
+                      </tr>
+                      
+                      <tr v-if="expandedRows[row.dateStr]" class="expanded-detail-row">
+                        <td :colspan="visibleColumns.length">
+                          <div class="expanded-content">
+                            <div v-for="tickerGroup in row.tickersList" :key="tickerGroup.symbol" class="ticker-group">
+                              <div class="trades-grid">
+                                <div class="trade-block" v-for="trade in tickerGroup.trades" :key="trade.tradeId">
+                                  <div class="trade-block-header">
+                                    <div class="trade-title-group">
+                                      <h4>{{ trade.tradeId }}</h4>
+                                    </div>
+                                    <div class="trade-block-stats">
+                                      <span v-if="trade.isOpen" class="badge-open">OPEN</span>
+                                      <span :class="trade.pnl >= 0 ? 'text-win' : 'text-loss'" style="font-weight: 600;">
+                                        PnL: {{ trade.pnl >= 0 ? '+' : '' }}{{ trade.costBasis > 0 ? ((trade.pnl / trade.costBasis) * 100).toFixed(2) : '0.00' }}%
+                                      </span>
+                                    </div>
+                                  </div>
+                                  
+                                  <div class="table-container" style="margin-top: 4px; padding: 0;">
+                                    <table class="executions-table">
+                                      <tbody>
+                                        <tr v-for="(exec, idx) in trade.executions" :key="idx">
+                                          <td :class="exec.type === 'BUY' ? 'text-win' : 'text-loss'"><strong>{{ exec.type }}</strong></td>
+                                          <td>${{ exec.price.toFixed(3) }}</td>
+                                          <td v-if="exec.pnlPct !== undefined" :class="exec.pnlPct >= 0 ? 'text-win' : 'text-loss'" style="text-align: right; font-weight: 500;">
+                                            {{ exec.pnlPct >= 0 ? '+' : '' }}{{ exec.pnlPct.toFixed(2) }}%
+                                          </td>
+                                          <td v-else></td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
+                        </td>
+                      </tr>
+                    </template>
+                  </template>
                 </template>
               </template>
             </tbody>
@@ -856,6 +964,34 @@ input[type="file"] {
 .empty-icon {
   width: 32px;
   height: 32px;
+  opacity: 0.5;
+}
+
+.row-week {
+  background-color: rgba(255, 255, 255, 0.03);
+  border-top: 2px solid var(--panel-border);
+}
+
+.row-week:hover {
+  background-color: var(--hover-bg);
+}
+
+.week-date-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.day-date-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 20px;
+  white-space: nowrap;
+}
+
+.day-chevron {
   opacity: 0.5;
 }
 

@@ -64,7 +64,7 @@ const store = useMarketStore();
 }
 
 .book-container {
-  flex: 1.75;
+  flex: 2.5;
   min-width: 0;
 }
 

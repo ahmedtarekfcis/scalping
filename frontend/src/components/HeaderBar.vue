@@ -26,6 +26,10 @@ function handleSymbolSubmit() {
   }
 }
 
+function handleChipClick(symbol) {
+  store.changeSymbol(symbol);
+}
+
 function syncWebull() {
   if (store.ws && store.ws.readyState === WebSocket.OPEN && store.symbol) {
     store.ws.send(JSON.stringify({ action: 'SYNC_WEBULL', symbol: store.symbol }));
@@ -97,6 +101,7 @@ function formatFloat(val) {
 
     <!-- Left & Center: Symbol Search + Scanner Chips -->
     <div class="symbol-and-chips">
+
       <div class="symbol-search-wrap">
         <button class="btn-sync" @click="syncWebull" title="Sync to Webull">
           ⮂
@@ -115,7 +120,7 @@ function formatFloat(val) {
           :key="item.symbol"
           class="scan-chip mono"
           :class="{ 'chip-up': item.trend === 'up', 'chip-down': item.trend === 'down' }"
-          @click="store.changeSymbol(item.symbol)"
+          @click="handleChipClick(item.symbol)"
           @mouseenter="showPopover($event, item)"
           @mouseleave="hidePopover"
         >
@@ -134,9 +139,31 @@ function formatFloat(val) {
       </div>
     </div>
 
-    <!-- Right: Connection Badge & Quick Settings -->
+    <!-- Right: Connection Badge & Audio Alert Bell Toggle -->
     <div class="status-section">
-      <div class="api-status-dot" :class="store.wsConnected ? 'connected' : 'disconnected'" :title="store.wsConnected ? 'API Connected' : 'API Disconnected'"></div>
+      <div 
+        class="api-status-dot" 
+        :class="store.wsConnected ? 'connected' : 'disconnected'" 
+        :title="store.wsConnected ? 'API Connected' : 'API Disconnected'"
+      ></div>
+      <button 
+        class="audio-toggle-btn"
+        :class="{ 'audio-on': store.soundEnabled, 'audio-off': !store.soundEnabled }"
+        @click="store.toggleSound()"
+        :title="store.soundEnabled ? 'Break S/R Audio Alert: ON (Click to mute)' : 'Break S/R Audio Alert: OFF (Click to unmute)'"
+      >
+        <svg v-if="store.soundEnabled" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+        </svg>
+        <svg v-else viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          <path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path>
+          <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path>
+          <path d="M18 8a6 6 0 0 0-9.33-5"></path>
+          <line x1="1" y1="1" x2="23" y2="23"></line>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -184,6 +211,8 @@ function formatFloat(val) {
   gap: 16px;
   flex: 1;
 }
+
+
 
 .symbol-search-wrap {
   display: flex;
@@ -283,14 +312,54 @@ function formatFloat(val) {
 }
 
 
-.api-status-dot {
+.status-section {
   position: fixed;
   top: 4px;
-  right: 4px;
+  right: 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  z-index: 10000;
+}
+
+.api-status-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  z-index: 10000;
+  flex-shrink: 0;
+}
+
+.audio-toggle-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+}
+
+.audio-toggle-btn:hover {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: scale(1.08);
+}
+
+.audio-toggle-btn.audio-on {
+  color: #facc15;
+  border-color: rgba(250, 204, 21, 0.5);
+  background: rgba(250, 204, 21, 0.12);
+  box-shadow: 0 0 8px rgba(250, 204, 21, 0.35);
+}
+
+.audio-toggle-btn.audio-off {
+  color: rgba(255, 255, 255, 0.35);
 }
 
 .api-status-dot.connected {

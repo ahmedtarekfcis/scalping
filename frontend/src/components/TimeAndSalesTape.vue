@@ -47,12 +47,7 @@ function formatSize(val) {
             {{ formatSize(tick.size) }}
           </span>
           
-          <span 
-            :class="[
-              'td-price font-bold',
-              tick.side === 'BUY' ? 'color-green' : tick.side === 'SELL' ? 'color-red' : 'text-primary'
-            ]"
-          >
+          <span class="td-price font-bold text-white">
             ${{ tick.price.toFixed(2) }}
           </span>
         </div>
@@ -126,7 +121,7 @@ function formatSize(val) {
 .table-body {
   flex: 1;
   overflow-y: auto;
-  background: var(--bg-secondary);
+  background: #0d0d0d;
   border: 1px solid var(--border-color);
   border-top: none;
   border-radius: 0 0 6px 6px;
@@ -150,6 +145,7 @@ function formatSize(val) {
 
 .td-price {
   text-align: left;
+  color: #ffffff;
 }
 .td-size {
   display: flex;

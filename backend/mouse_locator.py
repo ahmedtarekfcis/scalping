@@ -8,4 +8,4 @@ for i in range(5, 0, -1):
 
 x, y = pyautogui.position()
 print(f"\nYour mouse is at: X: {x}, Y: {y}")
-print("Use these coordinates in the webull_sync.py script!")
+print("Use these coordinates in the desktop_sync.py script!")
