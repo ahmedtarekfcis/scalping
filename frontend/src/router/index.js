@@ -22,6 +22,15 @@ const router = createRouter({
       component: TradeStatsView
     },
     {
+      path: '/journaling',
+      name: 'journaling',
+      component: () => import('../views/JournalingView.vue')
+    },
+    {
+      path: '/journal',
+      redirect: '/journaling'
+    },
+    {
       path: '/chart',
       name: 'chart',
       component: () => import('../views/chart/ChartView.vue')

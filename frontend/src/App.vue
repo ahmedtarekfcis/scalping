@@ -31,7 +31,7 @@ import HeaderBar from './components/HeaderBar.vue';
 const store = useMarketStore();
 const route = useRoute();
 
-const showHeader = computed(() => route.path !== '/trade-stats');
+const showHeader = computed(() => route.path !== '/trade-stats' && route.path !== '/journaling' && route.path !== '/journal');
 
 onMounted(() => {
   store.initWebSocket();
