@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models import IBKRConnectionConfig, ConnectionStatus
 from features.live_data.engine import LiveDataEngine
 from features.scanner.engine import IBKRScannerEngine
+from features.journal.router import router as journal_router
 
 app = FastAPI(title="TradeEdge.ai", version="1.0.0")
 
@@ -17,6 +18,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(journal_router)
 
 class ConnectionManager:
     def __init__(self):

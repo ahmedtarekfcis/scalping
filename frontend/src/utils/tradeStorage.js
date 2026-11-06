@@ -5,16 +5,18 @@
  */
 
 const DB_NAME = 'TradeEdgeStatsDB';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 const STORE_NAME = 'trades';
 const META_STORE_NAME = 'tradeMetadata';
 const JOURNAL_STORE_NAME = 'journalTrades';
 const JOURNAL_META_STORE_NAME = 'journalMetadata';
+const BEHAVIORAL_STORE_NAME = 'behavioralTrades';
 export const STORAGE_KEY = 'tradeStatsData';
 export const LEGACY_STORAGE_KEY = 'tradeStatsTransactions';
 export const METADATA_STORAGE_KEY = 'tradeStatsMetadata';
 export const JOURNAL_STORAGE_KEY = 'journalingTradesData';
 export const JOURNAL_METADATA_STORAGE_KEY = 'journalingMetadata';
+export const BEHAVIORAL_JOURNAL_STORAGE_KEY = 'behavioralJournalTrades';
 
 /**
  * Open IndexedDB database instance
@@ -40,6 +42,9 @@ function openIndexedDb() {
       }
       if (!db.objectStoreNames.contains(JOURNAL_META_STORE_NAME)) {
         db.createObjectStore(JOURNAL_META_STORE_NAME, { keyPath: 'tradeId' });
+      }
+      if (!db.objectStoreNames.contains(BEHAVIORAL_STORE_NAME)) {
+        db.createObjectStore(BEHAVIORAL_STORE_NAME, { keyPath: 'id' });
       }
     };
 
@@ -584,4 +589,455 @@ export async function copyTradesFromTradeStatsToJournal() {
     totalJournalTrades: mergedTrades.length,
   };
 }
+
+// ============================================================================
+// BEHAVIORAL TRADING JOURNAL STORAGE (Rebuilt from scratch)
+// ============================================================================
+
+/**
+ * Get behavioral journal trades synchronously from localStorage
+ */
+/**
+ * Merges multiple trade lists by id.
+ * Prevents any trade from being lost or deleted by stale reads or partial writes.
+ * If the same trade id appears multiple times, preserves the most recent update.
+ */
+export function mergeTradesById(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const t of list) {
+      if (!t || !t.id) continue;
+      const id = String(t.id).trim();
+      if (id.startsWith('demo-')) continue;
+
+      if (!map.has(id)) {
+        map.set(id, { ...t });
+      } else {
+        const existing = map.get(id);
+        const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+        const newTime = new Date(t.updatedAt || t.createdAt || 0).getTime();
+        if (newTime >= existingTime) {
+          map.set(id, { ...existing, ...t });
+        } else {
+          map.set(id, { ...t, ...existing });
+        }
+      }
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const dtA = `${a.tradeDate || ''} ${a.tradeTime || ''}`;
+    const dtB = `${b.tradeDate || ''} ${b.tradeTime || ''}`;
+    return dtB.localeCompare(dtA);
+  });
+}
+
+/**
+ * Get behavioral journal trades synchronously from localStorage.
+ * Checks primary key and legacy/fallback keys to ensure nothing is missed.
+ */
+export function getBehavioralTradesFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(BEHAVIORAL_JOURNAL_STORAGE_KEY);
+    let parsed = [];
+    if (raw) {
+      try {
+        const data = JSON.parse(raw);
+        if (Array.isArray(data)) parsed = data;
+      } catch (e) {
+        console.error('Failed to parse behavioral trades from localStorage:', e);
+      }
+    }
+
+    // Also check alternate manual key in case trades were saved there previously
+    let legacy = [];
+    try {
+      const legRaw = localStorage.getItem(JOURNAL_STORAGE_KEY);
+      if (legRaw) {
+        const legParsed = JSON.parse(legRaw);
+        if (Array.isArray(legParsed)) {
+          legacy = legParsed.filter((t) => t && String(t.id || '').startsWith('JT-'));
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    return mergeTradesById(parsed, legacy);
+  } catch (err) {
+    console.error('Failed to read behavioral trades from localStorage:', err);
+    return [];
+  }
+}
+
+/**
+ * Set behavioral journal trades synchronously in localStorage.
+ * Handles storage quota limits safely by storing lightweight fallback if heavy base64 screenshots exceed quota.
+ */
+export function setBehavioralTradesInLocalStorage(trades) {
+  try {
+    const clean = Array.isArray(trades) ? trades.filter((t) => t && !String(t.id).startsWith('demo-')) : [];
+    localStorage.setItem(BEHAVIORAL_JOURNAL_STORAGE_KEY, JSON.stringify(clean));
+    return true;
+  } catch (err) {
+    console.warn('LocalStorage save warning, trying safe screenshot-stripped fallback:', err);
+    try {
+      // Fallback: If quota exceeded due to large base64 screenshots,
+      // store the trades without heavy screenshots in localStorage (screenshots remain in IndexedDB),
+      // ensuring that trade records, prices, discipline stats, and dates are NEVER lost!
+      const safeTrades = trades.map((t) => {
+        const copy = { ...t };
+        if (Array.isArray(copy.screenshots) && copy.screenshots.length > 0) {
+          copy.screenshots = copy.screenshots.map((s) => (s && s.length > 20000 ? '[STORED_IN_IDB]' : s));
+        }
+        return copy;
+      });
+      localStorage.setItem(BEHAVIORAL_JOURNAL_STORAGE_KEY, JSON.stringify(safeTrades));
+      return true;
+    } catch (fallbackErr) {
+      console.error('Critical: LocalStorage save failed completely:', fallbackErr);
+      return false;
+    }
+  }
+}
+
+/**
+ * Read all behavioral journal trades from IndexedDB
+ */
+export async function getBehavioralTradesFromIndexedDb() {
+  try {
+    const db = await openIndexedDb();
+    if (!db.objectStoreNames.contains(BEHAVIORAL_STORE_NAME)) {
+      console.warn(`IndexedDB store ${BEHAVIORAL_STORE_NAME} not present yet`);
+      return [];
+    }
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(BEHAVIORAL_STORE_NAME, 'readonly');
+      const store = tx.objectStore(BEHAVIORAL_STORE_NAME);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = req.result || [];
+        resolve(list.filter((t) => t && !String(t.id).startsWith('demo-')));
+      };
+      req.onerror = () => reject(req.error || new Error('Failed to retrieve behavioral trades'));
+    });
+  } catch (err) {
+    console.warn('IndexedDB behavioral trades read error:', err);
+    return [];
+  }
+}
+
+/**
+ * Save all behavioral journal trades to IndexedDB
+ */
+export async function setBehavioralTradesInIndexedDb(trades) {
+  try {
+    const db = await openIndexedDb();
+    if (!db.objectStoreNames.contains(BEHAVIORAL_STORE_NAME)) {
+      console.warn(`IndexedDB store ${BEHAVIORAL_STORE_NAME} not present yet`);
+      return false;
+    }
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(BEHAVIORAL_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(BEHAVIORAL_STORE_NAME);
+      store.clear();
+      const clean = Array.isArray(trades) ? trades.filter((t) => t && !String(t.id).startsWith('demo-')) : [];
+      for (let i = 0; i < clean.length; i++) {
+        store.put(clean[i]);
+      }
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error || new Error('Failed to save behavioral trades to IndexedDB'));
+    });
+  } catch (err) {
+    console.warn('IndexedDB set error:', err);
+    return false;
+  }
+}
+
+/**
+ * Backend API URL resolver
+ */
+export function getApiBaseUrl() {
+  if (typeof window === 'undefined') return 'http://localhost:8000';
+  const hostname = window.location.hostname || 'localhost';
+  return `http://${hostname}:8000`;
+}
+
+/**
+ * Read all trades from the backend JSON file (data/journal_trades.json).
+ */
+export async function fetchJournalTradesFromFile() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    let res;
+    try {
+      res = await fetch('/api/journal', { signal: controller.signal });
+    } catch {
+      res = await fetch(`${getApiBaseUrl()}/api/journal`, { signal: controller.signal });
+    }
+    clearTimeout(timeoutId);
+
+    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    const data = await res.json();
+    return {
+      success: true,
+      trades: Array.isArray(data.trades) ? data.trades : [],
+      filePath: data.filePath || '',
+      fileName: data.fileName || 'journal_trades.json',
+      lastModified: data.lastModified || null,
+      count: data.count ?? (Array.isArray(data.trades) ? data.trades.length : 0),
+    };
+  } catch (err) {
+    console.warn('Could not read journal from backend JSON file (backend offline?):', err);
+    return {
+      success: false,
+      trades: [],
+      error: err.message || String(err),
+    };
+  }
+}
+
+/**
+ * Write/sync trades directly into the backend JSON file (data/journal_trades.json).
+ */
+export async function saveJournalTradesToFile(trades) {
+  try {
+    const clean = Array.isArray(trades) ? trades.filter((t) => t && !String(t.id).startsWith('demo-')) : [];
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    let res;
+    try {
+      res = await fetch('/api/journal', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trades: clean }),
+        signal: controller.signal,
+      });
+    } catch {
+      res = await fetch(`${getApiBaseUrl()}/api/journal`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trades: clean }),
+        signal: controller.signal,
+      });
+    }
+    clearTimeout(timeoutId);
+
+    if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+    const data = await res.json();
+    return { success: true, ...data };
+  } catch (err) {
+    console.warn('Could not save journal to backend JSON file:', err);
+    return { success: false, error: err.message || String(err) };
+  }
+}
+
+/**
+ * Delete a trade from the backend JSON file.
+ */
+export async function deleteJournalTradeFromFile(tradeId) {
+  try {
+    let res;
+    try {
+      res = await fetch(`/api/journal/${encodeURIComponent(tradeId)}`, { method: 'DELETE' });
+    } catch {
+      res = await fetch(`${getApiBaseUrl()}/api/journal/${encodeURIComponent(tradeId)}`, { method: 'DELETE' });
+    }
+    return res.ok;
+  } catch (e) {
+    console.warn('Could not delete trade from backend JSON file:', e);
+    return false;
+  }
+}
+
+/**
+ * Clear all trades from the backend JSON file.
+ */
+export async function clearJournalTradesFile() {
+  try {
+    let res;
+    try {
+      res = await fetch('/api/journal', { method: 'DELETE' });
+    } catch {
+      res = await fetch(`${getApiBaseUrl()}/api/journal`, { method: 'DELETE' });
+    }
+    return res.ok;
+  } catch (e) {
+    console.warn('Could not clear backend JSON file:', e);
+    return false;
+  }
+}
+
+/**
+ * Get file status information from backend.
+ */
+export async function getJournalFileInfo() {
+  try {
+    let res;
+    try {
+      res = await fetch('/api/journal/info');
+    } catch {
+      res = await fetch(`${getApiBaseUrl()}/api/journal/info`);
+    }
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.info || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Load persisted behavioral journal trades.
+ * Primary source of truth: local JSON file (data/journal_trades.json).
+ * Automatically migrates existing localStorage / IndexedDB trades on first run so no past trades are lost!
+ */
+export async function loadPersistedBehavioralTrades() {
+  // 1. Read existing local storage & IndexedDB as fallback/migration pool
+  const localRecords = getBehavioralTradesFromLocalStorage();
+  let idbRecords = [];
+  try {
+    idbRecords = await getBehavioralTradesFromIndexedDb();
+  } catch (err) {
+    console.warn('IDB read error, relying on localStorage:', err);
+  }
+
+  const localMerged = mergeTradesById(localRecords, idbRecords);
+
+  // 2. Fetch primary source of truth from backend JSON file
+  const fileResult = await fetchJournalTradesFromFile();
+
+  if (fileResult.success) {
+    // If the JSON file has trades, use it as the source of truth!
+    if (Array.isArray(fileResult.trades) && fileResult.trades.length > 0) {
+      // Merge with any offline local records
+      const allMerged = mergeTradesById(fileResult.trades, localMerged);
+      // Sync local caches
+      setBehavioralTradesInLocalStorage(allMerged);
+      setBehavioralTradesInIndexedDb(allMerged).catch(() => {});
+      // If we merged offline trades not yet in the file, save back to file!
+      if (allMerged.length > fileResult.trades.length) {
+        await saveJournalTradesToFile(allMerged);
+      }
+      return allMerged;
+    } else if (localMerged.length > 0) {
+      // JSON file is empty, but user already had trades in browser localStorage/IndexedDB!
+      // Auto-migrate them immediately into data/journal_trades.json!
+      console.info(`Migrating ${localMerged.length} trades from browser storage into JSON file...`);
+      await saveJournalTradesToFile(localMerged);
+      return localMerged;
+    }
+    return fileResult.trades;
+  }
+
+  // 3. Backend not reachable; fallback to local storage & IndexedDB
+  console.warn('Backend JSON file unreachable; using local storage cache');
+  return localMerged;
+}
+
+/**
+ * Persist behavioral journal trades to the backend JSON file (data/journal_trades.json),
+ * with localStorage and IndexedDB maintained as fast synchronous offline caches.
+ */
+export async function persistBehavioralTrades(trades) {
+  const clean = Array.isArray(trades) ? trades.filter((t) => t && !String(t.id).startsWith('demo-')) : [];
+
+  // 1. Immediately update localStorage and IndexedDB so UI feels instantaneous
+  setBehavioralTradesInLocalStorage(clean);
+  setBehavioralTradesInIndexedDb(clean).catch((err) =>
+    console.warn('IndexedDB behavioral persistence error:', err)
+  );
+
+  // 2. Persist safely and atomically to data/journal_trades.json
+  const fileResult = await saveJournalTradesToFile(clean);
+
+  return fileResult.success;
+}
+
+/**
+ * Save or update a single behavioral trade.
+ * Persists immediately to the JSON file and local caches.
+ */
+export async function saveSingleBehavioralTrade(trade) {
+  if (!trade || !trade.id) return [];
+  const targetId = String(trade.id).trim();
+
+  // Read current existing trades
+  const fileRes = await fetchJournalTradesFromFile();
+  let currentList = [];
+  if (fileRes.success && fileRes.trades.length > 0) {
+    currentList = fileRes.trades;
+  } else {
+    const local = getBehavioralTradesFromLocalStorage();
+    let idb = [];
+    try {
+      idb = await getBehavioralTradesFromIndexedDb();
+    } catch (e) { /* ignore */ }
+    currentList = mergeTradesById(local, idb);
+  }
+
+  const index = currentList.findIndex((t) => t && String(t.id).trim() === targetId);
+  const nowIso = new Date().toISOString();
+
+  if (index >= 0) {
+    currentList[index] = { ...currentList[index], ...trade, updatedAt: nowIso };
+  } else {
+    currentList.unshift({ ...trade, createdAt: trade.createdAt || nowIso });
+  }
+
+  await persistBehavioralTrades(currentList);
+  return currentList;
+}
+
+/**
+ * Delete a single behavioral trade by id
+ */
+export async function deleteSingleBehavioralTrade(id) {
+  const targetId = String(id || '').trim();
+  const fileRes = await fetchJournalTradesFromFile();
+  let currentList = [];
+  if (fileRes.success && fileRes.trades.length > 0) {
+    currentList = fileRes.trades;
+  } else {
+    const local = getBehavioralTradesFromLocalStorage();
+    let idb = [];
+    try {
+      idb = await getBehavioralTradesFromIndexedDb();
+    } catch (e) { /* ignore */ }
+    currentList = mergeTradesById(local, idb);
+  }
+
+  const filtered = currentList.filter((t) => t && String(t.id || '').trim() !== targetId);
+  await persistBehavioralTrades(filtered);
+  await deleteJournalTradeFromFile(targetId);
+  return filtered;
+}
+
+/**
+ * Clear all behavioral journal trades from both JSON file and local caches.
+ */
+export async function clearAllBehavioralTrades() {
+  await clearJournalTradesFile();
+
+  try {
+    const db = await openIndexedDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(BEHAVIORAL_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(BEHAVIORAL_STORE_NAME);
+      store.clear();
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('Failed to clear behavioral trades in IndexedDB:', err);
+  }
+
+  try {
+    localStorage.removeItem(BEHAVIORAL_JOURNAL_STORAGE_KEY);
+  } catch (err) {
+    console.warn('Failed to clear behavioral trades in localStorage:', err);
+  }
+}
+
 

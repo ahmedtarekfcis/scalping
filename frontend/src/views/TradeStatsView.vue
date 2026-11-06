@@ -38,6 +38,7 @@ import {
 } from 'lucide-vue-next';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import HtmlEditor from '../components/HtmlEditor.vue';
 import * as XLSX from 'xlsx';
 import { parseTradeStatsCsv } from '../utils/tradeStatsParser';
 import {
@@ -1154,7 +1155,8 @@ const formatTradeCellValue = (t, colKey) => {
     }
     case 'comment': {
       const meta = tradeMetadata.value[t.tradeId] || {};
-      return meta.comment || meta.notes || t.comment || t.notes || '';
+      const raw = meta.comment || meta.notes || t.comment || t.notes || '';
+      return String(raw).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     }
     case 'images': {
       const meta = tradeMetadata.value[t.tradeId] || {};
@@ -1952,7 +1954,11 @@ const exportAllDaysPdf = async () => {
                             :class="{ 'has-anomaly': trade.hasAnomaly }"
                           >
                             <!-- Trade Card Header -->
-                            <div class="trade-card-header">
+                            <div
+                              class="trade-card-header clickable-trade-header"
+                              @click="openEditOffcanvas(trade)"
+                              title="Click to edit trade setup, watched level, screenshots and comment"
+                            >
                               <div class="trade-header-meta">
                                 <span class="trade-num-badge">Trade #{{ trade.tradeNumber }}</span>
                                 <span class="trade-symbol-tag">{{ trade.symbol }}</span>
@@ -2092,6 +2098,9 @@ const exportAllDaysPdf = async () => {
                                     v-for="(t, idx) in trade.executions"
                                     :key="t.id ?? (t.tr_no ? t.tr_no + '_' + idx : idx)"
                                     :class="{ 'anomaly-row': t.isAnomaly }"
+                                    class="execution-row-clickable"
+                                    @click="openEditOffcanvas(trade)"
+                                    title="Click row to edit trade setup, watched level, screenshots and comment"
                                   >
                                     <td
                                       v-for="col in visibleTradeCols"
@@ -2562,7 +2571,7 @@ const exportAllDaysPdf = async () => {
           <!-- Section 1: Setup / Strategy Type -->
           <div class="form-group">
             <label class="form-label">
-              <span>نوع الصفقة / Setup Type</span>
+              <span>Setup Type</span>
               <span class="label-hint">Preset or custom catalyst</span>
             </label>
             <div class="setup-presets-grid">
@@ -2591,7 +2600,7 @@ const exportAllDaysPdf = async () => {
           <div class="form-group">
             <div class="form-label-row">
               <label class="form-label">
-                <span>قيمة المراقبة / Watched Key Level</span>
+                <span>Watched Key Level</span>
                 <span class="label-hint">Price or technical level watched for trigger</span>
               </label>
               <button
@@ -2612,11 +2621,11 @@ const exportAllDaysPdf = async () => {
             />
           </div>
 
-          <!-- Section 3: Comment / التعليق -->
+          <!-- Section 3: Comment -->
           <div class="form-group">
             <label class="form-label">
               <MessageSquare :size="13" class="accent-icon" />
-              <span>التعليق / Comment</span>
+              <span>Comment</span>
               <span class="label-hint">Execution takeaway or key observation</span>
             </label>
             <input
@@ -2631,7 +2640,7 @@ const exportAllDaysPdf = async () => {
           <div class="form-group">
             <div class="form-label-row">
               <label class="form-label">
-                <span>الصور والرسومات البيانية / Screenshots</span>
+                <span>Screenshots & Charts</span>
                 <span class="label-hint">({{ offcanvasForm.images.length }} attached)</span>
               </label>
               <label class="btn-upload-label" for="tradeImageInput">
@@ -2681,21 +2690,20 @@ const exportAllDaysPdf = async () => {
           <!-- Section 4: Trade Notes & Review -->
           <div class="form-group">
             <label class="form-label">
-              <span>ملاحظات الصفقة / Trade Notes</span>
-              <span class="label-hint">Execution review, thesis, mistakes</span>
+              <span>Trade Notes</span>
+              <span class="label-hint">Execution review, thesis, mistakes (Rich HTML Editor)</span>
             </label>
-            <textarea
+            <HtmlEditor
               v-model="offcanvasForm.notes"
-              class="form-textarea"
-              rows="3"
               placeholder="Why did you take this trade? Did you respect your stop? Did you average down improperly?..."
-            ></textarea>
+              min-height="120px"
+            />
           </div>
 
           <!-- Section 5: Executions Breakdown inside this Trade -->
           <div class="form-group">
             <label class="form-label">
-              <span>تنفيذات الصفقة / Execution Fills ({{ editingTrade.executions.length }})</span>
+              <span>Execution Fills ({{ editingTrade.executions.length }})</span>
             </label>
             <div class="fills-mini-table">
               <div
@@ -3796,6 +3804,20 @@ input[type='file'] { display: none; }
   background: rgba(30, 41, 59, 0.65);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   flex-wrap: wrap;
+}
+.trade-card-header.clickable-trade-header {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.trade-card-header.clickable-trade-header:hover {
+  background: rgba(56, 189, 248, 0.12);
+}
+.execution-row-clickable {
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.execution-row-clickable:hover td {
+  background: rgba(56, 189, 248, 0.08) !important;
 }
 .trade-header-meta {
   display: flex;

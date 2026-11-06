@@ -1,3894 +1,6075 @@
 <script setup>
-import { ref, shallowRef, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import {
-  FileSpreadsheet,
-  UploadCloud,
-  Search,
-  Filter,
-  Calendar,
-  Layers,
-  ArrowUpDown,
-  Tag,
-  ChevronDown,
-  ChevronRight,
-  Columns,
-  SlidersHorizontal,
-  ArrowUp,
-  ArrowDown,
-  RotateCcw,
-  X,
-  FileDown,
-  Table,
-  BarChart3,
-  TrendingUp,
-  PieChart,
-  Clock,
-  Activity,
-  DollarSign,
-  Edit3,
-  Camera,
-  Image,
-  Eye,
-  Trash2,
-  ZoomIn,
-  Check,
-  AlertTriangle,
   Plus,
-  MessageSquare,
   BookOpen,
-  Copy,
-  FolderDown,
+  Calendar,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Filter,
+  Search,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  Edit3,
+  Trash2,
+  X,
+  Upload,
+  Image as ImageIcon,
+  Download,
+  Flame,
+  Award,
+  RefreshCw,
+  Clock,
+  Layers,
+  ArrowRight,
+  ArrowDown,
+  ArrowUp,
+  ShieldAlert,
+  BrainCircuit,
+  Target,
+  BarChart2,
+  SunMedium,
+  FileJson,
+  FileDown,
 } from 'lucide-vue-next';
 import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
-import { parseTradeStatsCsv } from '../utils/tradeStatsParser';
+import html2canvas from 'html2canvas';
+import HtmlEditor from '../components/HtmlEditor.vue';
 import {
-  getJournalTradesFromLocalStorage,
-  loadPersistedJournalTrades,
-  persistJournalTrades,
-  clearPersistedJournalTrades,
-  loadAllJournalMetadata,
-  saveJournalMetadata,
-  clearAllJournalMetadata,
-  copyTradesFromTradeStatsToJournal,
-  JOURNAL_STORAGE_KEY,
+  MISTAKE_DEFINITIONS,
+  MISTAKE_CATEGORIES,
+  TRADING_SESSIONS,
+  getDefaultCurrentDateStr,
+  getDefaultCurrentTimeStr,
+  convertLocalToEst,
+  detectSessionFromTime,
+  evaluateTradeMistakes,
+  calculateOverallStats,
+  calculateMistakeFrequencyAnalysis,
+  calculateWeeklyReview,
+  getWeekDateRange,
+} from '../utils/behavioralMistakes';
+import {
+  loadPersistedBehavioralTrades,
+  persistBehavioralTrades,
+  saveSingleBehavioralTrade,
+  deleteSingleBehavioralTrade,
+  clearAllBehavioralTrades,
+  getBehavioralTradesFromLocalStorage,
+  setBehavioralTradesInLocalStorage,
+  mergeTradesById,
+  fetchJournalTradesFromFile,
+  getJournalFileInfo,
 } from '../utils/tradeStorage';
-import { deduplicateTrades } from '../utils/tradeDeduplicator';
-import { groupTransactionsIntoTrades } from '../utils/tradeGrouper';
 
-// Helper to format clean transaction record for compact storage
-const toCleanJsonRecord = (t) => ({
-  id: t.id ?? null,
-  systemId: t.systemId ?? null,
-  system_date: t.system_date ?? null,
-  tr_no: t.tr_no ?? (t.transactionId || null),
-  entry_type: t.entry_type ?? (t.entryType || null),
-  trd_type: t.trd_type ?? (t.tradeType || null),
-  trade_dt: t.trade_dt ?? (t.tradeDate || null),
-  settle_dt: t.settle_dt ?? (t.settleDate || null),
-  exec_time: t.exec_time ?? (t.execTime || null),
-  symbol: t.symbol ?? '',
-  qty: t.qty !== undefined ? t.qty : (t.quantity ?? 0),
-  price: t.price ?? 0,
-  g_amt: t.g_amt !== undefined ? t.g_amt : (t.grossAmount ?? 0),
-  n_amt: t.n_amt !== undefined ? t.n_amt : (t.netAmount ?? 0),
-  comm: t.comm !== undefined ? t.comm : (t.commission ?? 0),
-  exch_fee: t.exch_fee !== undefined ? t.exch_fee : (t.exchFee ?? null),
-  sec_fee: t.sec_fee !== undefined ? t.sec_fee : (t.secFee ?? null),
-  descr: t.descr !== undefined ? t.descr : (t.description ?? null),
-  m_fee1: t.m_fee1 !== undefined ? t.m_fee1 : (t.mFee1 ?? null),
-  m_fee4: t.m_fee4 !== undefined ? t.m_fee4 : (t.mFee4 ?? null),
-});
+// ----------------------------------------------------------------------------
+// Core Reactive State (Saved directly to data/journal_trades.json on disk)
+// ----------------------------------------------------------------------------
+const trades = ref(
+  getBehavioralTradesFromLocalStorage().filter((t) => t && !String(t.id).startsWith('demo-'))
+);
 
-// Load stored journal transactions synchronously on initial render
-const loadStoredJournalTransactions = () => {
-  try {
-    const rawRecords = getJournalTradesFromLocalStorage();
-    if (Array.isArray(rawRecords) && rawRecords.length > 0) {
-      return parseTradeStatsCsv(rawRecords);
+// Safety net: continuously keep localStorage updated whenever trades change
+watch(
+  trades,
+  (newTrades) => {
+    if (Array.isArray(newTrades) && newTrades.length > 0) {
+      setBehavioralTradesInLocalStorage(newTrades);
     }
-  } catch (err) {
-    console.error('Failed to load journal transactions from localStorage:', err);
-  }
-  return [];
-};
+  },
+  { deep: true }
+);
 
-// ---------------------------------------------------------------- state
-const transactions = shallowRef(loadStoredJournalTransactions());
-const tradeMetadata = ref({});
+// Journal JSON file storage metadata & sync status
+const jsonFileInfo = ref({
+  filePath: 'data/journal_trades.json',
+  fileName: 'journal_trades.json',
+  exists: true,
+  sizeBytes: 0,
+  lastModified: null,
+  tradeCount: 0,
+});
+const isBackendConnected = ref(true);
+const isReloading = ref(false);
+const isLoading = ref(true);
+const activeTab = ref('history'); // Default active tab is "Trade Log" ('history')
 const isOffcanvasOpen = ref(false);
-const offcanvasMode = ref('create'); // 'create' | 'edit'
-const editingTrade = ref(null);
-const imagePreviewModal = ref(null);
-const isSavingMeta = ref(false);
+const editingTradeId = ref(null);
+const expandedTradeIds = ref(new Set());
+const activeLightboxImage = ref(null);
+const toast = ref({ show: false, message: '', type: 'success' });
 
-const getTodayDateStr = () => {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+// Selection & PDF Export State
+const selectedTradeIds = ref(new Set());
+const isExportingPdf = ref(false);
+
+// Filter & Search Controls
+const searchQuery = ref('');
+const selectedMistakeFilter = ref('ALL');
+const selectedDisciplineFilter = ref('ALL'); // 'ALL' | 'CLEAN' | 'MISTAKES'
+const selectedDateFilter = ref('ALL'); // 'ALL' | 'THIS_WEEK' | 'THIS_MONTH' | 'LAST_WEEK'
+const selectedSessionFilter = ref('ALL'); // 'ALL' | session ID
+
+// Trade Log List Filter & Sort Controls
+const tradeLogDateFilter = ref('TODAY'); // 'TODAY' | 'LAST_WEEK' | 'LAST_MONTH' | 'CUSTOM' | 'ALL' (default TODAY)
+const customStartDate = ref('');
+const customEndDate = ref('');
+const isCalendarPickerOpen = ref(false);
+const calendarPickerRef = ref(null);
+const sortOrder = ref('desc'); // 'desc' | 'asc' (default desc)
+
+// Weekly Review Navigation (anchor Monday)
+const targetWeekMonday = ref(getWeekDateRange(new Date()).start);
+
+// ----------------------------------------------------------------------------
+// Trade Form State (Offcanvas)
+// ----------------------------------------------------------------------------
+const initialFormState = () => {
+  const currentTime = getDefaultCurrentTimeStr();
+  const currentDate = getDefaultCurrentDateStr();
+  return {
+    id: '',
+    tradeDate: currentDate,
+    tradeTime: currentTime,
+    session: detectSessionFromTime(currentTime, currentDate), // Auto-converted from Cairo to EST market session
+    symbol: '',
+    direction: 'LONG',
+    entryPrice: null,
+    tradeSequence: 1,
+    frontsideSetup: null, // true | false | null
+
+    // Section B: Technical Levels
+    ema9Value: null,
+    vwapValue: null,
+    nearestResistance: null,
+
+    // Section C: Entry Discipline
+    predefinedEntry: null, // true | false | null
+    plannedEntryPrice: null,
+    entryType: '', // 'Breakout' | 'FOMO' | 'Retest 9 EMA' | 'Retest VWAP'
+    enteredAtPredefinedPrice: null, // true | false | null
+    entryDeviationDirection: null, // 'ABOVE' | 'BELOW' | null
+    entryDeviationReason: '',
+    enteredAboveAction: null, // 'SOLD_HALF' | 'CLOSED_ENTIRE' | 'HELD_FULL' | null
+    enteredAboveReason: '',
+
+    // Section D: Risk Management & Execution
+    predefinedStopLoss: null, // true | false | null
+    stopLossPrice: null,
+    averagedDown: null, // true | false | null
+    averagedDownReason: '',
+    frozeOnLoss: null, // true | false | null
+    frozeReason: '',
+    finalExitType: null, // 'SETUP' | 'FEAR' | null
+    finalExitFearReason: '',
+    flushOccurred: null, // true | false | null
+    flushReason: '',
+
+    // Section E: Notes & Screenshots
+    notes: '',
+    screenshots: [],
+  };
 };
 
-const getCurrentTimeStr = () => {
-  const now = new Date();
-  const h = String(now.getHours()).padStart(2, '0');
-  const m = String(now.getMinutes()).padStart(2, '0');
-  const s = String(now.getSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
+const form = ref(initialFormState());
+
+// Helper for Session Metadata
+const getSessionMeta = (sessionId) => {
+  return (
+    TRADING_SESSIONS.find((s) => s.id === sessionId) || {
+      id: sessionId || 'MARKET_OPEN',
+      label: sessionId || 'Market Hours',
+      hours: '',
+      color: '#34d399',
+      bg: 'rgba(52, 211, 153, 0.15)',
+    }
+  );
 };
 
-// Form state for creating or editing trades
-const createForm = ref({
-  symbol: '',
-  date: getTodayDateStr(),
-  direction: 'LONG', // 'LONG' | 'SHORT'
-  setupType: '',
-  watchedValue: '',
-  comment: '',
-  notes: '',
-  images: [],
+// Helper to format Date and Time as 'DD Mon - HH:MM:SS'
+const formatTradeDateTime = (dateStr, timeStr) => {
+  if (!dateStr) return timeStr || '';
+  try {
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const mIdx = parseInt(parts[1], 10) - 1;
+      const mName = monthNames[mIdx] || parts[1];
+      const day = String(parts[2]).padStart(2, '0');
+      const datePart = `${day} ${mName}`;
+      if (timeStr) {
+        return `${datePart} - ${timeStr}`;
+      }
+      return datePart;
+    }
+  } catch (e) {
+    // fallback
+  }
+  return `${dateStr}${timeStr ? ' - ' + timeStr : ''}`;
+};
 
-  // Standard simple 1-entry + optional 1-exit
-  entryQty: 100,
-  entryPrice: null,
-  entryTime: getCurrentTimeStr(),
-  isStillOpen: false,
-  exitQty: 100,
-  exitPrice: null,
-  exitTime: getCurrentTimeStr(),
-  commission: 0,
-
-  // Advanced multi-fill builder
-  isMultiLeg: false,
-  legs: [
-    { side: 'B', qty: 100, price: null, time: getCurrentTimeStr(), comm: 0 },
-    { side: 'S', qty: 100, price: null, time: getCurrentTimeStr(), comm: 0 },
-  ],
-});
-
-// Single execution fill form when adding an extra fill to an existing trade
-const newFillForm = ref({
-  side: 'B',
-  qty: 100,
-  price: null,
-  time: getCurrentTimeStr(),
-  comm: 0,
-});
-const showAddFillBox = ref(false);
-
-const SETUP_PRESETS = [
-  '9 EMA',
-  'High of Day',
-  'Round Figure',
-  'VWAP Bounce',
+// Quick Chips Presets
+const ENTRY_WAS_CHIPS = [
   'Breakout',
-  'Gap & Go',
-  'Support Bounce',
-  'Resistance Short',
+  'FOMO',
+  'Retest 9 EMA',
+  'Retest VWAP',
 ];
 
-const getSetupBadgeClass = (type) => {
-  if (!type) return '';
-  const s = String(type).toLowerCase();
-  if (s.includes('9') || s.includes('ema')) return 'setup-ema';
-  if (s.includes('high') || s.includes('hod')) return 'setup-hod';
-  if (s.includes('round') || s.includes('figure') || s.includes('dollar')) return 'setup-round';
-  if (s.includes('vwap')) return 'setup-vwap';
-  if (s.includes('breakout')) return 'setup-breakout';
-  return 'setup-custom';
+const ENTRY_DEVIATION_CHIPS = [
+  'FOMO / Chased breakout',
+  'Tape sped up / Feared missing move',
+  'Market order slippage',
+  'Hesitation & late execution',
+  'Anticipated break prematurely',
+];
+
+const HELD_FULL_CHIPS = [
+  'Greed / Wanted full profit',
+  'Hoped momentum would continue',
+  'Did not want to accept immediate loss',
+  'Lack of clear reduction plan',
+  'Confident in bigger timeframe',
+];
+
+const AVERAGED_DOWN_CHIPS = [
+  'Wanted to lower average price',
+  'Hoped for breakeven bounce',
+  'Refused to take the loss',
+  'Overly biased / In love with the stock',
+  'Size was initially small',
+];
+
+const FROZE_ON_LOSS_CHIPS = [
+  'Frozen in shock by sudden drop',
+  'Hoped / Prayed for recovery',
+  'Fear of realizing the dollar loss',
+  'Position size was too large',
+  'Removed or ignored mental stop',
+];
+
+const FEAR_EXIT_CHIPS = [
+  'Feared giving back gains',
+  'Panic on pullback candle',
+  'Anxiety / Fear of loss',
+  'Hesitation after fast move',
+  'Rushed to lock green prematurely',
+];
+
+const FLUSH_REASON_CHIPS = [
+  'Stock stalled before flush and failed to exit',
+  'Broke key support / Broke VWAP',
+  'Large ask wall appeared',
+  'Bids pulled / Buyers evaporated',
+  'Fakeout / Failed breakout',
+  'Greed / Held too long for more',
+  'Blow-off top / Sharp reversal',
+  'Chased late at the top',
+  'Volume dried up / Momentum lost',
+  'Tape stalled / Price halted',
+];
+
+// ----------------------------------------------------------------------------
+// Multi-Select Reason Helpers
+// ----------------------------------------------------------------------------
+const isChipSelected = (fieldName, chipText) => {
+  const val = form.value[fieldName] || '';
+  if (!val) return false;
+  const parts = val.split(/\s*•\s*|\n+/).map((p) => p.trim());
+  return parts.includes(chipText.trim());
 };
 
-// Open offcanvas for logging a new trade
-const openCreateOffcanvas = () => {
-  offcanvasMode.value = 'create';
-  editingTrade.value = null;
-  showAddFillBox.value = false;
-  createForm.value = {
-    symbol: '',
-    date: getTodayDateStr(),
-    direction: 'LONG',
-    setupType: '',
-    watchedValue: '',
-    comment: '',
-    notes: '',
-    images: [],
-    entryQty: 100,
-    entryPrice: null,
-    entryTime: getCurrentTimeStr(),
-    isStillOpen: false,
-    exitQty: 100,
-    exitPrice: null,
-    exitTime: getCurrentTimeStr(),
-    commission: 0,
-    isMultiLeg: false,
-    legs: [
-      { side: 'B', qty: 100, price: null, time: getCurrentTimeStr(), comm: 0 },
-      { side: 'S', qty: 100, price: null, time: getCurrentTimeStr(), comm: 0 },
-    ],
-  };
-  isOffcanvasOpen.value = true;
+const toggleReasonChip = (fieldName, chipText) => {
+  const trimmed = chipText.trim();
+  const currentVal = form.value[fieldName] || '';
+  let parts = currentVal
+    .split(/\s*•\s*|\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  const idx = parts.indexOf(trimmed);
+  if (idx >= 0) {
+    // Unselect chip
+    parts.splice(idx, 1);
+  } else {
+    // Select chip
+    parts.push(trimmed);
+  }
+
+  form.value[fieldName] = parts.join(' • ');
 };
 
-// Open offcanvas for editing an existing trade
-const openEditOffcanvas = (trade) => {
-  offcanvasMode.value = 'edit';
-  editingTrade.value = trade;
-  showAddFillBox.value = false;
-  const existingMeta = tradeMetadata.value[trade.tradeId] || {};
-  createForm.value = {
-    symbol: trade.symbol,
-    date: trade.date,
-    direction: trade.direction,
-    setupType: existingMeta.setupType || trade.setupType || '',
-    watchedValue: existingMeta.watchedValue || trade.watchedValue || '',
-    comment: existingMeta.comment || trade.comment || existingMeta.notes || trade.notes || '',
-    notes: existingMeta.notes || trade.notes || '',
-    images: Array.isArray(existingMeta.images)
-      ? [...existingMeta.images]
-      : Array.isArray(trade.images)
-      ? [...trade.images]
-      : [],
-    entryQty: trade.totalEntryQty || 100,
-    entryPrice: trade.avgEntryPrice || null,
-    entryTime: trade.entryTime || getCurrentTimeStr(),
-    isStillOpen: trade.status === 'OPEN',
-    exitQty: trade.totalExitQty || 100,
-    exitPrice: trade.avgExitPrice || null,
-    exitTime: trade.exitTime || getCurrentTimeStr(),
-    commission: trade.totalFees || 0,
-    isMultiLeg: false,
-    legs: [],
-  };
-
-  // Pre-fill next fill side
-  newFillForm.value = {
-    side: trade.direction === 'LONG' ? 'S' : 'B',
-    qty: trade.openQty > 0 ? trade.openQty : 100,
-    price: null,
-    time: getCurrentTimeStr(),
-    comm: 0,
-  };
-
-  isOffcanvasOpen.value = true;
+const clearReasonChips = (fieldName) => {
+  form.value[fieldName] = '';
 };
 
-const openTradeImages = (trade) => {
-  openEditOffcanvas(trade);
+// Show Toast Alert
+const showToast = (message, type = 'success') => {
+  toast.value = { show: true, message, type };
+  setTimeout(() => {
+    toast.value.show = false;
+  }, 3500);
 };
 
-const closeOffcanvas = () => {
-  isOffcanvasOpen.value = false;
-  editingTrade.value = null;
-  showAddFillBox.value = false;
-};
+// ----------------------------------------------------------------------------
+// Lifecycle & Data Loading (Strictly Manual Data)
+// ----------------------------------------------------------------------------
+onMounted(async () => {
+  try {
+    const loaded = await loadPersistedBehavioralTrades();
+    if (Array.isArray(loaded) && loaded.length > 0) {
+      // Merge with in-memory trades so no trades are ever overwritten or lost
+      trades.value = mergeTradesById(trades.value, loaded);
+    } else if (trades.value.length > 0) {
+      // If loaded was empty but in-memory has trades, persist in-memory immediately!
+      await persistBehavioralTrades(trades.value);
+    }
+    const info = await getJournalFileInfo();
+    if (info) {
+      jsonFileInfo.value = info;
+      isBackendConnected.value = true;
+    }
+  } catch (err) {
+    console.error('Failed to load behavioral journal:', err);
+    isBackendConnected.value = false;
+  } finally {
+    isLoading.value = false;
+  }
 
-const selectPresetSetup = (preset) => {
-  createForm.value.setupType = preset;
-};
+  window.addEventListener('paste', handleGlobalPaste);
+  window.addEventListener('click', handleWindowClick);
+});
 
-const fillAvgPriceAsWatched = () => {
-  if (editingTrade.value?.avgEntryPrice) {
-    createForm.value.watchedValue = '$' + Number(editingTrade.value.avgEntryPrice).toFixed(2);
-  } else if (createForm.value.entryPrice) {
-    createForm.value.watchedValue = '$' + Number(createForm.value.entryPrice).toFixed(2);
+// Reload fresh trades from backend data/journal_trades.json
+const reloadFromJsonFile = async () => {
+  if (isReloading.value) return;
+  isReloading.value = true;
+  try {
+    const res = await fetchJournalTradesFromFile();
+    if (res.success) {
+      trades.value = res.trades.filter((t) => t && !String(t.id).startsWith('demo-'));
+      isBackendConnected.value = true;
+      jsonFileInfo.value = {
+        filePath: res.filePath || jsonFileInfo.value.filePath,
+        fileName: res.fileName || 'journal_trades.json',
+        exists: true,
+        sizeBytes: 0,
+        lastModified: res.lastModified,
+        tradeCount: trades.value.length,
+      };
+      showToast(`Loaded ${trades.value.length} trades from ${res.fileName || 'journal_trades.json'}`, 'success');
+    } else {
+      isBackendConnected.value = false;
+      showToast('Could not reach backend to reload JSON file (is backend running?)', 'error');
+    }
+  } catch (err) {
+    console.error('Reload error:', err);
+    showToast('Failed to reload JSON file', 'error');
+  } finally {
+    isReloading.value = false;
   }
 };
 
-const handleImageUpload = (e) => {
-  const files = e.target.files;
-  if (!files || !files.length) return;
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    if (!file.type.startsWith('image/')) continue;
+onUnmounted(() => {
+  window.removeEventListener('paste', handleGlobalPaste);
+  window.removeEventListener('click', handleWindowClick);
+});
+
+// Compress image before adding to screenshots (lightweight ~50KB per image, perfectly safe for localStorage & IDB)
+const compressImageFile = (file, maxWidth = 1200, maxHeight = 900, quality = 0.75) => {
+  return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onload = (event) => {
-      createForm.value.images.push(event.target.result);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressed);
+      };
+      img.onerror = () => resolve(e.target?.result || null);
+      img.src = e.target?.result;
     };
+    reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
-  }
-  e.target.value = '';
-};
-
-const removeImage = (index) => {
-  createForm.value.images.splice(index, 1);
-};
-
-// Multi-leg helpers
-const addLeg = (side = 'B') => {
-  createForm.value.legs.push({
-    side,
-    qty: 100,
-    price: null,
-    time: getCurrentTimeStr(),
-    comm: 0,
   });
 };
 
-const removeLeg = (index) => {
-  if (createForm.value.legs.length > 1) {
-    createForm.value.legs.splice(index, 1);
-  }
-};
-
-// Clipboard paste listener for screenshots
-const onWindowPaste = (e) => {
+// Clipboard Paste for Chart Screenshots (Supports multiple pasted images)
+const handleGlobalPaste = async (e) => {
   if (!isOffcanvasOpen.value) return;
   const items = e.clipboardData?.items;
   if (!items) return;
+  let count = 0;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.type.indexOf('image') !== -1) {
       const blob = item.getAsFile();
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        createForm.value.images.push(ev.target.result);
-        status.value = {
-          text: 'Pasted chart screenshot from clipboard!',
-          tone: 'good',
-        };
-      };
-      reader.readAsDataURL(blob);
-    }
-  }
-};
-
-// Save a newly created trade
-const saveNewTrade = async () => {
-  const sym = String(createForm.value.symbol || '').trim().toUpperCase();
-  if (!sym) {
-    alert('Please enter a Symbol / Ticker (e.g. TSLA, NVDA)');
-    return;
-  }
-
-  const dt = createForm.value.date || getTodayDateStr();
-  const newTransactions = [];
-  const baseTimestamp = Date.now();
-
-  if (createForm.value.isMultiLeg) {
-    // Multi-leg executions
-    for (let i = 0; i < createForm.value.legs.length; i++) {
-      const leg = createForm.value.legs[i];
-      const q = Math.abs(Number(leg.qty) || 0);
-      const p = Number(leg.price) || 0;
-      if (q <= 0 || p <= 0) {
-        alert(`Fill #${i + 1} requires valid quantity and price`);
-        return;
+      if (!blob) continue;
+      const dataUrl = await compressImageFile(blob);
+      if (dataUrl) {
+        form.value.screenshots.push(dataUrl);
+        count++;
       }
-      const side = leg.side === 'B' ? 'B' : 'S';
-      const tm = leg.time || getCurrentTimeStr();
-      const comm = Number(leg.comm) || 0;
-      const g_amt = q * p;
-      const n_amt = side === 'B' ? -(g_amt + comm) : g_amt - comm;
-
-      newTransactions.push({
-        id: baseTimestamp + i,
-        systemId: 'MANUAL',
-        system_date: `${dt}T00:00:00`,
-        tr_no: `MAN_${baseTimestamp}_${i}`,
-        entry_type: 'TRD',
-        trd_type: side,
-        trade_dt: dt,
-        settle_dt: null,
-        exec_time: `${dt} ${tm}`,
-        symbol: sym,
-        qty: q,
-        price: p,
-        g_amt,
-        n_amt,
-        comm,
-        exch_fee: null,
-        sec_fee: null,
-        descr: `Manual journal execution #${i + 1}`,
-        m_fee1: null,
-        m_fee4: null,
-      });
     }
-  } else {
-    // Standard 1-entry + optional 1-exit
-    const entryQ = Math.abs(Number(createForm.value.entryQty) || 0);
-    const entryP = Number(createForm.value.entryPrice) || 0;
-    if (entryQ <= 0 || entryP <= 0) {
-      alert('Please enter valid Entry Quantity and Entry Price');
-      return;
-    }
+  }
+  if (count > 0) {
+    showToast(`Pasted ${count} screenshot${count > 1 ? 's' : ''} from clipboard!`, 'success');
+  }
+};
 
-    const entrySide = createForm.value.direction === 'SHORT' ? 'S' : 'B';
-    const entryTm = createForm.value.entryTime || getCurrentTimeStr();
-    const entryComm = Number(createForm.value.commission) || 0;
-    const entryGross = entryQ * entryP;
-    const entryNet = entrySide === 'B' ? -(entryGross + entryComm) : entryGross - entryComm;
-
-    newTransactions.push({
-      id: baseTimestamp,
-      systemId: 'MANUAL',
-      system_date: `${dt}T00:00:00`,
-      tr_no: `MAN_${baseTimestamp}_1`,
-      entry_type: 'TRD',
-      trd_type: entrySide,
-      trade_dt: dt,
-      settle_dt: null,
-      exec_time: `${dt} ${entryTm}`,
-      symbol: sym,
-      qty: entryQ,
-      price: entryP,
-      g_amt: entryGross,
-      n_amt: entryNet,
-      comm: entryComm,
-      exch_fee: null,
-      sec_fee: null,
-      descr: 'Manual journal entry fill',
-      m_fee1: null,
-      m_fee4: null,
-    });
-
-    // Exit fill if not still open
-    if (!createForm.value.isStillOpen) {
-      const exitQ = Math.abs(Number(createForm.value.exitQty) || entryQ);
-      const exitP = Number(createForm.value.exitPrice) || 0;
-      if (exitP <= 0) {
-        alert('Please enter a valid Exit Price (or check "Trade Still Open")');
-        return;
+// ----------------------------------------------------------------------------
+// Dynamic Analytics Calculations (Derived strictly from manual records)
+// ----------------------------------------------------------------------------
+// Trades with dynamically attached mistakes (no double-counting, missing data safe)
+const enrichedTrades = computed(() => {
+  return trades.value.map((t) => {
+    const mistakes = evaluateTradeMistakes(t);
+    let pnl = t.pnl;
+    let status = t.status;
+    if (t.entryPrice && t.exitPrice && t.shares) {
+      const diff = t.direction === 'SHORT' ? t.entryPrice - t.exitPrice : t.exitPrice - t.entryPrice;
+      pnl = Number((diff * t.shares).toFixed(2));
+      if (!status) {
+        status = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'BREAKEVEN';
       }
-      const exitSide = entrySide === 'B' ? 'S' : 'B';
-      const exitTm = createForm.value.exitTime || getCurrentTimeStr();
-      const exitGross = exitQ * exitP;
-      const exitNet = exitSide === 'B' ? -(exitGross) : exitGross;
-
-      newTransactions.push({
-        id: baseTimestamp + 1,
-        systemId: 'MANUAL',
-        system_date: `${dt}T00:00:00`,
-        tr_no: `MAN_${baseTimestamp}_2`,
-        entry_type: 'TRD',
-        trd_type: exitSide,
-        trade_dt: dt,
-        settle_dt: null,
-        exec_time: `${dt} ${exitTm}`,
-        symbol: sym,
-        qty: exitQ,
-        price: exitP,
-        g_amt: exitGross,
-        n_amt: exitNet,
-        comm: 0,
-        exch_fee: null,
-        sec_fee: null,
-        descr: 'Manual journal exit fill',
-        m_fee1: null,
-        m_fee4: null,
-      });
     }
-  }
-
-  isSavingMeta.value = true;
-
-  try {
-    const parsedNewRecords = parseTradeStatsCsv(newTransactions);
-    const combined = [...transactions.value, ...parsedNewRecords];
-    combined.sort((a, b) => {
-      const dtA = `${a.trade_dt || a.tradeDate || ''} ${a.exec_time || a.execTime || ''}`;
-      const dtB = `${b.trade_dt || b.tradeDate || ''} ${b.exec_time || b.execTime || ''}`;
-      if (dtA && dtB && dtA !== dtB) return dtA.localeCompare(dtB);
-      return (Number(a.id) || 0) - (Number(b.id) || 0);
-    });
-
-    // Group to identify the generated tradeId
-    const grouped = groupTransactionsIntoTrades(combined, tradeMetadata.value);
-    const matchingTrade = grouped.find(
-      (tr) => tr.symbol === sym && tr.date === dt && tr.executions.some((ex) => ex.tr_no === newTransactions[0].tr_no)
-    );
-
-    const targetTradeId = matchingTrade ? matchingTrade.tradeId : `TRD_${sym}_${dt}_${baseTimestamp}`;
-
-    const metaData = {
-      watchedValue: createForm.value.watchedValue.trim(),
-      setupType: createForm.value.setupType.trim(),
-      comment: createForm.value.comment.trim(),
-      notes: createForm.value.notes.trim() || createForm.value.comment.trim(),
-      images: createForm.value.images,
+    return {
+      ...t,
+      session: t.session || detectSessionFromTime(t.tradeTime, t.tradeDate),
+      mistakes,
+      mistakesCount: mistakes.length,
+      isClean: mistakes.length === 0,
+      calculatedPnl: pnl,
+      calculatedStatus: status || (t.isStillOpen ? 'OPEN' : 'UNKNOWN'),
     };
-
-    await saveJournalMetadata(targetTradeId, metaData);
-    tradeMetadata.value = {
-      ...tradeMetadata.value,
-      [targetTradeId]: { ...metaData, tradeId: targetTradeId },
-    };
-
-    await persistJournalTrades(combined.map(toCleanJsonRecord));
-    transactions.value = combined;
-    expandedDates.value[dt] = true;
-
-    status.value = {
-      text: `Logged new ${createForm.value.direction} trade on ${sym}!`,
-      tone: 'good',
-    };
-
-    closeOffcanvas();
-  } catch (err) {
-    console.error('Failed to log trade:', err);
-    status.value = { text: `Error logging trade: ${err.message}`, tone: 'bad' };
-  } finally {
-    isSavingMeta.value = false;
-  }
-};
-
-// Save edits to an existing trade
-const saveEditedTrade = async () => {
-  if (!editingTrade.value) return;
-  isSavingMeta.value = true;
-  const tId = editingTrade.value.tradeId;
-
-  const dataToSave = {
-    watchedValue: createForm.value.watchedValue.trim(),
-    setupType: createForm.value.setupType.trim(),
-    comment: createForm.value.comment.trim(),
-    notes: createForm.value.notes.trim() || createForm.value.comment.trim(),
-    images: createForm.value.images,
-  };
-
-  await saveJournalMetadata(tId, dataToSave);
-
-  tradeMetadata.value = {
-    ...tradeMetadata.value,
-    [tId]: {
-      ...dataToSave,
-      tradeId: tId,
-    },
-  };
-
-  status.value = {
-    text: `Saved trade journal for ${editingTrade.value.symbol} (Trade #${editingTrade.value.tradeNumber})`,
-    tone: 'good',
-  };
-
-  isSavingMeta.value = false;
-  closeOffcanvas();
-
-  setTimeout(() => {
-    if (status.value.tone === 'good') {
-      status.value = { text: '', tone: 'muted' };
-    }
-  }, 4000);
-};
-
-// Add an extra execution fill directly into an existing trade
-const addFillToExistingTrade = async () => {
-  if (!editingTrade.value) return;
-  const q = Math.abs(Number(newFillForm.value.qty) || 0);
-  const p = Number(newFillForm.value.price) || 0;
-  if (q <= 0 || p <= 0) {
-    alert('Please enter a valid Quantity and Price for the execution');
-    return;
-  }
-
-  const dt = editingTrade.value.date || getTodayDateStr();
-  const sym = editingTrade.value.symbol;
-  const tm = newFillForm.value.time || getCurrentTimeStr();
-  const side = newFillForm.value.side === 'B' ? 'B' : 'S';
-  const comm = Number(newFillForm.value.comm) || 0;
-  const g_amt = q * p;
-  const n_amt = side === 'B' ? -(g_amt + comm) : g_amt - comm;
-  const timestamp = Date.now();
-
-  const newTx = {
-    id: timestamp,
-    systemId: 'MANUAL',
-    system_date: `${dt}T00:00:00`,
-    tr_no: `MAN_${timestamp}`,
-    entry_type: 'TRD',
-    trd_type: side,
-    trade_dt: dt,
-    settle_dt: null,
-    exec_time: `${dt} ${tm}`,
-    symbol: sym,
-    qty: q,
-    price: p,
-    g_amt,
-    n_amt,
-    comm,
-    exch_fee: null,
-    sec_fee: null,
-    descr: `Manual execution (${side === 'B' ? 'Buy' : 'Sell'})`,
-    m_fee1: null,
-    m_fee4: null,
-  };
-
-  const parsed = parseTradeStatsCsv([newTx]);
-  const combined = [...transactions.value, ...parsed];
-  combined.sort((a, b) => {
-    const dtA = `${a.trade_dt || a.tradeDate || ''} ${a.exec_time || a.execTime || ''}`;
-    const dtB = `${b.trade_dt || b.tradeDate || ''} ${b.exec_time || b.execTime || ''}`;
-    if (dtA && dtB && dtA !== dtB) return dtA.localeCompare(dtB);
-    return (Number(a.id) || 0) - (Number(b.id) || 0);
   });
-
-  await persistJournalTrades(combined.map(toCleanJsonRecord));
-  transactions.value = combined;
-
-  // Refresh editing trade reference
-  const grouped = groupTransactionsIntoTrades(combined, tradeMetadata.value);
-  const updated = grouped.find((tr) => tr.tradeId === editingTrade.value.tradeId);
-  if (updated) {
-    editingTrade.value = updated;
-  }
-
-  showAddFillBox.value = false;
-  status.value = {
-    text: `Added ${side === 'B' ? 'BUY' : 'SELL'} fill (${q} sh @ $${p}) to ${sym}!`,
-    tone: 'good',
-  };
-};
-
-// Delete an entire trade and its executions
-const deleteTrade = async (trade) => {
-  if (!trade) return;
-  if (!confirm(`Are you sure you want to delete Trade #${trade.tradeNumber} on ${trade.symbol} (${trade.executions.length} fills)?`)) {
-    return;
-  }
-
-  const txIdsToDelete = new Set(trade.executions.map((e) => String(e.tr_no ?? e.transactionId ?? e.id)));
-  const remaining = transactions.value.filter((t) => !txIdsToDelete.has(String(t.tr_no ?? t.transactionId ?? t.id)));
-
-  await persistJournalTrades(remaining.map(toCleanJsonRecord));
-  transactions.value = remaining;
-
-  status.value = {
-    text: `Deleted Trade #${trade.tradeNumber} (${trade.symbol})`,
-    tone: 'muted',
-  };
-
-  closeOffcanvas();
-};
-
-// Copy all records from Trading Stats into Journaling
-const copyFromTradingStats = async () => {
-  try {
-    status.value = { text: 'Importing records from Trading Stats...', tone: 'muted' };
-    const res = await copyTradesFromTradeStatsToJournal();
-    if (res.copiedCount === 0) {
-      status.value = {
-        text: 'All records from Trading Stats already exist in Journaling (0 new records).',
-        tone: 'muted',
-      };
-      return;
-    }
-
-    const reloaded = await loadPersistedJournalTrades();
-    transactions.value = parseTradeStatsCsv(reloaded);
-    tradeMetadata.value = await loadAllJournalMetadata();
-
-    status.value = {
-      text: `Successfully imported ${res.copiedCount} trades from Trading Stats into Journaling!`,
-      tone: 'good',
-    };
-  } catch (err) {
-    console.error(err);
-    status.value = { text: `Error copying from Trading Stats: ${err.message}`, tone: 'bad' };
-  }
-};
-
-// ---------------------------------------------------------------- Navigation & View state
-const mainTab = ref('tables'); // 'tables' | 'stats'
-const activeTab = ref('by-date'); // 'by-date' | 'by-symbol'
-const expandedDates = ref({});
-const searchQuery = ref('');
-const selectedSide = ref('ALL');
-const selectedDate = ref('ALL');
-const selectedSymbol = ref('ALL');
-const selectedSession = ref('ALL');
-const minOrderQty = ref(0);
-const status = ref({ text: '', tone: 'muted' });
-const isDragging = ref(false);
-const fileInput = ref(null);
-
-const hasData = computed(() => transactions.value.length > 0);
-
-// Format helpers
-const num = (v) => Number(v || 0).toLocaleString('en-US');
-const fmtMoney = (v, digits = 2) => {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—';
-  const abs = Math.abs(v).toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-  return `${v < 0 ? '-' : ''}$${abs}`;
-};
-const fmtSigned = (v, digits = 2) => {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—';
-  return `${v > 0 ? '+' : ''}${fmtMoney(v, digits)}`;
-};
-const cls = (v) => (v > 0.0001 ? 'pos' : v < -0.0001 ? 'neg' : 'muted');
-const fmtExecTime = (raw) => {
-  if (raw === null || raw === undefined) return 'null';
-  const s = String(raw).trim();
-  if (!s || s === 'null') return 'null';
-  if (s.includes(' ')) return s.split(' ')[1] || s;
-  if (s.includes('T')) return s.split('T')[1] || s;
-  return s;
-};
-
-// Ingest files (JSON, CSV, XLSX)
-const ingestFiles = async (fileList) => {
-  const files = [...(fileList || [])];
-  if (!files.length) return;
-
-  status.value = {
-    text: `Processing ${files.length} file${files.length === 1 ? '' : 's'}...`,
-    tone: 'muted',
-  };
-
-  const parsedIncomingBatches = [];
-
-  for (const file of files) {
-    try {
-      const fileNameLower = file.name.toLowerCase();
-
-      if (fileNameLower.endsWith('.xlsx') || fileNameLower.endsWith('.xls')) {
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-        const batch = parseTradeStatsCsv(jsonData);
-        if (batch.length) parsedIncomingBatches.push(...batch);
-      } else {
-        const text = await file.text();
-        const batch = parseTradeStatsCsv(text);
-        if (batch.length) parsedIncomingBatches.push(...batch);
-      }
-    } catch (err) {
-      console.error(err);
-      status.value = { text: `Could not parse "${file.name}": ${err.message}`, tone: 'bad' };
-      return;
-    }
-  }
-
-  if (!parsedIncomingBatches.length) {
-    status.value = {
-      text: 'No valid trade records found. Expected JSON array, CSV, or Excel file.',
-      tone: 'bad',
-    };
-    return;
-  }
-
-  try {
-    const currentList = transactions.value && transactions.value.length ? [...transactions.value] : loadStoredJournalTransactions();
-    const { newRecords, duplicateCount, totalIncoming } = deduplicateTrades(currentList, parsedIncomingBatches);
-
-    if (!newRecords.length) {
-      status.value = {
-        text: `No new trades to add. All ${totalIncoming} record${totalIncoming === 1 ? '' : 's'} already exist in journal.`,
-        tone: 'muted',
-      };
-      return;
-    }
-
-    const combined = [...currentList, ...newRecords];
-    combined.sort((a, b) => {
-      const dtA = `${a.trade_dt || a.tradeDate || ''} ${a.exec_time || a.execTime || ''}`;
-      const dtB = `${b.trade_dt || b.tradeDate || ''} ${b.exec_time || b.execTime || ''}`;
-      if (dtA && dtB && dtA !== dtB) return dtA.localeCompare(dtB);
-      return (Number(a.id) || 0) - (Number(b.id) || 0);
-    });
-
-    await persistJournalTrades(combined.map(toCleanJsonRecord));
-    transactions.value = combined;
-    expandedDates.value = {};
-
-    status.value = {
-      text: `Added ${newRecords.length} new trades to journal (${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'} skipped).`,
-      tone: 'good',
-    };
-  } catch (err) {
-    console.error(err);
-    status.value = { text: `Error processing journal transactions: ${err.message}`, tone: 'bad' };
-  }
-};
-
-const onFileChange = async (e) => {
-  await ingestFiles(e.target.files);
-  e.target.value = '';
-};
-
-const onDrop = async (e) => {
-  isDragging.value = false;
-  await ingestFiles(e.dataTransfer?.files);
-};
-
-const allExpanded = computed(() => {
-  if (!byDateRows.value.length) return false;
-  return byDateRows.value.every((r) => expandedDates.value[r.date]);
 });
 
-const toggleExpandAll = () => {
-  if (allExpanded.value) {
-    expandedDates.value = {};
-  } else {
-    const next = {};
-    byDateRows.value.forEach((r) => {
-      next[r.date] = true;
-    });
-    expandedDates.value = next;
-  }
-};
+// Date-Filtered Trades for Analytics
+const filteredTrades = computed(() => {
+  let list = enrichedTrades.value;
 
-const clearData = async () => {
-  transactions.value = [];
-  try {
-    await clearPersistedJournalTrades();
-    await clearAllJournalMetadata();
-    tradeMetadata.value = {};
-  } catch (err) {
-    console.error('Failed to clear journal storage:', err);
-  }
-  expandedDates.value = {};
-  searchQuery.value = '';
-  selectedSide.value = 'ALL';
-  selectedDate.value = 'ALL';
-  selectedSymbol.value = 'ALL';
-  selectedSession.value = 'ALL';
-  minOrderQty.value = 0;
-  status.value = { text: 'All journal transactions have been cleared', tone: 'muted' };
-};
-
-const confirmClearData = () => {
-  if (window.confirm('Are you sure you want to clear all journal records from local storage?')) {
-    clearData();
-  }
-};
-
-// ---------------------------------------------------------------- Column configurations
-const defaultDateCols = [
-  { key: 'trade_dt', label: 'trade_dt', visible: true, align: 'l', width: 130 },
-  { key: 'records', label: 'records', visible: true, align: 'r', width: 85 },
-  { key: 'symbols', label: 'symbols', visible: true, align: 'r', width: 80 },
-  { key: 'qty', label: 'qty', visible: true, align: 'r', width: 95 },
-  { key: 'buyQty', label: 'buy qty', visible: true, align: 'r', width: 95 },
-  { key: 'sellQty', label: 'sell qty', visible: true, align: 'r', width: 95 },
-  { key: 'buyGross', label: 'buy g_amt', visible: true, align: 'r', width: 110 },
-  { key: 'sellGross', label: 'sell g_amt', visible: true, align: 'r', width: 110 },
-  { key: 'netDiff', label: 'n_amt diff', visible: true, align: 'r', width: 120 },
-  { key: 'fees', label: 'fees', visible: true, align: 'r', width: 90 },
-];
-
-const defaultTradeCols = [
-  { key: 'setupType', label: 'Setup Type', visible: true, align: 'c', badge: true, width: 115 },
-  { key: 'watchedValue', label: 'Watched Val', visible: true, align: 'r', mono: true, width: 105 },
-  { key: 'comment', label: 'Comment', visible: true, align: 'l', width: 150 },
-  { key: 'images', label: 'Images', visible: true, align: 'c', width: 75 },
-  { key: 'actions', label: 'Actions', visible: true, align: 'c', width: 75 },
-  { key: 'tr_no', label: 'tr_no', visible: true, align: 'l', mono: true, bold: true, width: 95 },
-  { key: 'trd_type', label: 'trd_type', visible: true, align: 'c', badge: true, width: 65 },
-  { key: 'trade_dt', label: 'trade_dt', visible: true, align: 'l', mono: true, width: 95 },
-  { key: 'exec_time', label: 'exec_time', visible: true, align: 'l', mono: true, bold: true, width: 85 },
-  { key: 'symbol', label: 'symbol', visible: true, align: 'l', bold: true, width: 80 },
-  { key: 'qty', label: 'qty', visible: true, align: 'r', width: 75 },
-  { key: 'price', label: 'price', visible: true, align: 'r', width: 80 },
-  { key: 'g_amt', label: 'g_amt', visible: true, align: 'r', mono: true, width: 95 },
-  { key: 'n_amt', label: 'n_amt', visible: true, align: 'r', mono: true, width: 95 },
-  { key: 'comm', label: 'comm', visible: true, align: 'r', muted: true, width: 70 },
-  { key: 'descr', label: 'descr', visible: false, align: 'l', muted: true, width: 140 },
-];
-
-const defaultSymbolCols = [
-  { key: 'symbol', label: 'Symbol', align: 'l', bold: true, width: 90 },
-  { key: 'count', label: 'Transactions', align: 'r', width: 95 },
-  { key: 'datesCount', label: 'Active Days', align: 'r', width: 90 },
-  { key: 'qty', label: 'Total Shares', align: 'r', width: 95 },
-  { key: 'buyQty', label: 'Buy Shares', align: 'r', width: 95 },
-  { key: 'sellQty', label: 'Sell Shares', align: 'r', width: 95 },
-  { key: 'openQty', label: 'Open Qty', align: 'r', width: 85 },
-  { key: 'buyGross', label: 'Buy Gross', align: 'r', width: 105 },
-  { key: 'sellGross', label: 'Sell Gross', align: 'r', width: 105 },
-  { key: 'netDiff', label: 'Net Diff (Sell - Buy)', align: 'r', width: 135 },
-  { key: 'fees', label: 'Fees', align: 'r', width: 90 },
-];
-
-const loadSavedCols = (storageKey, defaultCols) => {
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) return defaultCols.map((c) => ({ ...c }));
-    const saved = JSON.parse(raw);
-    if (!Array.isArray(saved) || !saved.length) return defaultCols.map((c) => ({ ...c }));
-
-    const defMap = new Map(defaultCols.map((c) => [c.key, c]));
-    const result = [];
-
-    for (const item of saved) {
-      if (defMap.has(item.key)) {
-        const def = defMap.get(item.key);
-        let parsedWidth = def.width;
-        if (typeof item.width === 'number' && item.width >= 35) {
-          parsedWidth = item.width;
-        }
-        result.push({
-          ...def,
-          visible: typeof item.visible === 'boolean' ? item.visible : def.visible,
-          width: parsedWidth,
-        });
-        defMap.delete(item.key);
-      }
-    }
-    for (const remaining of defMap.values()) {
-      result.push({ ...remaining });
-    }
-    return result;
-  } catch (err) {
-    return defaultCols.map((c) => ({ ...c }));
-  }
-};
-
-const dateCols = ref(loadSavedCols('journaling.cols.date', defaultDateCols));
-const tradeCols = ref(loadSavedCols('journaling.cols.trade', defaultTradeCols));
-const symbolCols = ref(loadSavedCols('journaling.cols.symbol', defaultSymbolCols));
-
-watch(dateCols, (val) => localStorage.setItem('journaling.cols.date', JSON.stringify(val)), { deep: true });
-watch(tradeCols, (val) => localStorage.setItem('journaling.cols.trade', JSON.stringify(val)), { deep: true });
-watch(symbolCols, (val) => localStorage.setItem('journaling.cols.symbol', JSON.stringify(val)), { deep: true });
-
-const visibleDateCols = computed(() => dateCols.value.filter((c) => c.visible));
-const visibleTradeCols = computed(() => tradeCols.value.filter((c) => c.visible));
-
-const activeColDropdown = ref(null);
-const toggleColDropdown = (type) => {
-  activeColDropdown.value = activeColDropdown.value === type ? null : type;
-};
-const closeColDropdown = () => {
-  activeColDropdown.value = null;
-};
-const moveCol = (colsArr, index, direction) => {
-  const targetIdx = index + direction;
-  if (targetIdx < 0 || targetIdx >= colsArr.length) return;
-  const temp = colsArr[index];
-  colsArr[index] = colsArr[targetIdx];
-  colsArr[targetIdx] = temp;
-};
-const resetDateCols = () => {
-  dateCols.value = defaultDateCols.map((c) => ({ ...c }));
-};
-const resetTradeCols = () => {
-  tradeCols.value = defaultTradeCols.map((c) => ({ ...c }));
-};
-
-const activeResizeCol = ref(null);
-const startColResize = (e, col) => {
-  e.preventDefault();
-  activeResizeCol.value = col.key;
-  const startX = e.pageX;
-  const startWidth = col.width || 80;
-
-  const onMouseMove = (moveEvent) => {
-    const diff = moveEvent.pageX - startX;
-    col.width = Math.max(35, Math.min(600, startWidth + diff));
-  };
-
-  const onMouseUp = () => {
-    activeResizeCol.value = null;
-    window.removeEventListener('mousemove', onMouseMove);
-    window.removeEventListener('mouseup', onMouseUp);
-  };
-
-  window.addEventListener('mousemove', onMouseMove);
-  window.addEventListener('mouseup', onMouseUp);
-};
-
-const resetSingleColWidth = (col, defaultList) => {
-  const match = defaultList.find((c) => c.key === col.key);
-  if (match) col.width = match.width;
-};
-
-onMounted(async () => {
-  window.addEventListener('click', closeColDropdown);
-  window.addEventListener('paste', onWindowPaste);
-
-  try {
-    const persisted = await loadPersistedJournalTrades();
-    if (persisted.length > 0 && persisted.length !== transactions.value.length) {
-      transactions.value = parseTradeStatsCsv(persisted);
-    }
-  } catch (err) {
-    console.warn('Failed to load journal from IndexedDB:', err);
-  }
-
-  try {
-    tradeMetadata.value = await loadAllJournalMetadata();
-  } catch (err) {
-    console.warn('Failed to load journal metadata:', err);
-  }
-
-  if (transactions.value.length > 0) {
-    status.value = {
-      text: `Loaded ${num(transactions.value.length)} journal trades`,
-      tone: 'good',
-    };
-    setTimeout(() => {
-      if (status.value.tone === 'good') {
-        status.value = { text: '', tone: 'muted' };
-      }
-    }, 3500);
-  }
-});
-
-onUnmounted(() => {
-  window.removeEventListener('click', closeColDropdown);
-  window.removeEventListener('paste', onWindowPaste);
-});
-
-// ---------------------------------------------------------------- Filter helpers
-const distinctDates = computed(() => {
-  const set = new Set();
-  transactions.value.forEach((t) => {
-    if (t.tradeDate) set.add(t.tradeDate);
-  });
-  return [...set].sort((a, b) => b.localeCompare(a));
-});
-
-const distinctSymbols = computed(() => {
-  const counts = new Map();
-  transactions.value.forEach((t) => {
-    const sym = t.symbol || 'OTHER';
-    counts.set(sym, (counts.get(sym) || 0) + 1);
-  });
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([symbol, count]) => ({ symbol, count }));
-});
-
-const getSession = (t) => {
-  const timeStr = String(t.execTime || t.exec_time || '');
-  if (!timeStr) return 'REGULAR';
-  const match = timeStr.match(/(\d{1,2}):(\d{2})/);
-  if (!match) return 'REGULAR';
-  const h = parseInt(match[1], 10);
-  const m = parseInt(match[2], 10);
-  const totalM = h * 60 + m;
-  if (totalM < 9 * 60 + 30) return 'PRE';
-  if (totalM >= 16 * 60) return 'POST';
-  return 'REGULAR';
-};
-
-const hasActiveFilters = computed(
-  () =>
-    searchQuery.value.trim() !== '' ||
-    selectedSide.value !== 'ALL' ||
-    selectedDate.value !== 'ALL' ||
-    selectedSymbol.value !== 'ALL' ||
-    selectedSession.value !== 'ALL' ||
-    minOrderQty.value > 0,
-);
-
-const resetAllFilters = () => {
-  searchQuery.value = '';
-  selectedSide.value = 'ALL';
-  selectedDate.value = 'ALL';
-  selectedSymbol.value = 'ALL';
-  selectedSession.value = 'ALL';
-  minOrderQty.value = 0;
-};
-
-const filteredTransactions = computed(() => {
-  let list = transactions.value;
-
-  if (selectedSide.value !== 'ALL') {
-    list = list.filter((t) => t.tradeType === selectedSide.value);
-  }
-  if (selectedSymbol.value !== 'ALL') {
-    list = list.filter((t) => (t.symbol || 'OTHER') === selectedSymbol.value);
-  }
-  if (selectedDate.value !== 'ALL') {
-    list = list.filter((t) => t.tradeDate === selectedDate.value);
-  }
-  if (selectedSession.value !== 'ALL') {
-    list = list.filter((t) => getSession(t) === selectedSession.value);
-  }
-  if (minOrderQty.value > 0) {
-    list = list.filter((t) => (t.quantity || 0) >= minOrderQty.value);
-  }
-  if (searchQuery.value.trim()) {
-    const q = searchQuery.value.trim().toLowerCase();
-    list = list.filter((t) => {
-      const symMatch = (t.symbol || '').toLowerCase().includes(q);
-      const idMatch = String(t.tr_no || t.transactionId || t.id || '').toLowerCase().includes(q);
-      const descMatch = String(t.descr || t.description || '').toLowerCase().includes(q);
-      const meta = tradeMetadata.value[t.tradeId] || {};
-      const setupMatch = String(meta.setupType || '').toLowerCase().includes(q);
-      const watchedMatch = String(meta.watchedValue || '').toLowerCase().includes(q);
-      const commentMatch = String(meta.comment || meta.notes || '').toLowerCase().includes(q);
-      const notesMatch = String(meta.notes || '').toLowerCase().includes(q);
-      return symMatch || idMatch || descMatch || setupMatch || watchedMatch || commentMatch || notesMatch;
-    });
+  if (selectedDateFilter.value === 'THIS_WEEK') {
+    const week = getWeekDateRange(new Date());
+    list = list.filter((t) => t.tradeDate >= week.startStr && t.tradeDate <= week.endStr);
+  } else if (selectedDateFilter.value === 'LAST_WEEK') {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    const week = getWeekDateRange(d);
+    list = list.filter((t) => t.tradeDate >= week.startStr && t.tradeDate <= week.endStr);
+  } else if (selectedDateFilter.value === 'THIS_MONTH') {
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    list = list.filter((t) => (t.tradeDate || '').startsWith(ym));
   }
 
   return list;
 });
 
-// ---------------------------------------------------------------- Summary Stats
-const summary = computed(() => {
-  const list = filteredTransactions.value;
-  if (!list.length) {
-    return {
-      count: 0,
-      totalQty: 0,
-      totalTurnover: 0,
-      totalFees: 0,
-      avgSize: 0,
-      minQty: 0,
-      maxQty: 0,
-      avgFillsPerDay: '0.0',
-      maxDayFills: 0,
-      peakDay: '—',
-      symbolsCount: 0,
-      topSymbol: null,
-      peakHour: null,
-      feePerShare: 0,
-      buyCount: 0,
-      sellCount: 0,
-    };
-  }
+// Overall Stats for active period
+const overallStats = computed(() => {
+  return calculateOverallStats(filteredTrades.value);
+});
 
-  let totalQty = 0;
-  let totalTurnover = 0;
-  let totalFees = 0;
-  let minQty = Infinity;
-  let maxQty = -Infinity;
-  let buyCount = 0;
-  let sellCount = 0;
+// Mistake Frequency & Trends Analysis
+const mistakeFrequencyList = computed(() => {
+  return calculateMistakeFrequencyAnalysis(filteredTrades.value);
+});
 
-  const dayCounts = new Map();
-  const symbolMap = new Map();
-  const hourMap = new Map();
+// Weekly Review Data
+const weeklyReview = computed(() => {
+  return calculateWeeklyReview(enrichedTrades.value, targetWeekMonday.value);
+});
 
-  list.forEach((t) => {
-    const q = t.quantity || 0;
-    totalQty += q;
-    totalTurnover += t.grossAmount || 0;
-    totalFees += t.totalFees || 0;
+// Category Distribution for Charting
+const categoryDistribution = computed(() => {
+  const map = {};
+  MISTAKE_CATEGORIES.forEach((cat) => {
+    map[cat.id] = { ...cat, count: 0 };
+  });
 
-    if (q > 0) {
-      if (q < minQty) minQty = q;
-      if (q > maxQty) maxQty = q;
-    }
+  filteredTrades.value.forEach((t) => {
+    t.mistakes.forEach((m) => {
+      const cat = m.category || 'Discipline';
+      if (map[cat]) map[cat].count++;
+    });
+  });
 
-    if (t.tradeType === 'B') buyCount++;
-    else if (t.tradeType === 'S') sellCount++;
+  const total = Object.values(map).reduce((sum, item) => sum + item.count, 0);
+  return Object.values(map).map((item) => ({
+    ...item,
+    percentage: total > 0 ? Number(((item.count / total) * 100).toFixed(1)) : 0,
+  }));
+});
 
-    const d = t.tradeDate || 'Unknown';
-    dayCounts.set(d, (dayCounts.get(d) || 0) + 1);
+// Behavioral Pattern: Sequence Overtrading Impact
+const sequenceImpactStats = computed(() => {
+  const buckets = {
+    1: { label: '1st Trade', total: 0, flawed: 0, mistakes: 0 },
+    2: { label: '2nd Trade', total: 0, flawed: 0, mistakes: 0 },
+    3: { label: '3rd Trade', total: 0, flawed: 0, mistakes: 0 },
+    '4+': { label: '4th+ Trade', total: 0, flawed: 0, mistakes: 0 },
+  };
 
-    const s = t.symbol || 'OTHER';
-    symbolMap.set(s, (symbolMap.get(s) || 0) + q);
-
-    const timeStr = String(t.execTime || t.exec_time || '');
-    if (timeStr) {
-      const match = timeStr.match(/(\d{1,2}):/);
-      if (match) {
-        const h = parseInt(match[1], 10);
-        hourMap.set(h, (hourMap.get(h) || 0) + 1);
-      }
+  filteredTrades.value.forEach((t) => {
+    const seq = Number(t.tradeSequence) || 1;
+    const bucket = seq === 1 ? 1 : seq === 2 ? 2 : seq === 3 ? 3 : '4+';
+    buckets[bucket].total++;
+    if (t.mistakesCount > 0) {
+      buckets[bucket].flawed++;
+      buckets[bucket].mistakes += t.mistakesCount;
     }
   });
 
-  const uniqueDays = Math.max(1, dayCounts.size);
-  const avgFillsPerDay = (list.length / uniqueDays).toFixed(1);
+  return Object.values(buckets).map((b) => ({
+    ...b,
+    flawRate: b.total > 0 ? Number(((b.flawed / b.total) * 100).toFixed(1)) : 0,
+  }));
+});
 
-  let maxDayFills = 0;
-  let peakDay = '—';
-  dayCounts.forEach((cnt, day) => {
-    if (cnt > maxDayFills) {
-      maxDayFills = cnt;
-      peakDay = day;
+// Behavioral Pattern: Frontside vs Backside Setup Impact
+const frontsideImpactStats = computed(() => {
+  let frontsideTotal = 0;
+  let frontsideFlawed = 0;
+  let backsideTotal = 0;
+  let backsideFlawed = 0;
+
+  filteredTrades.value.forEach((t) => {
+    if (t.frontsideSetup === true) {
+      frontsideTotal++;
+      if (t.mistakesCount > 0) frontsideFlawed++;
+    } else if (t.frontsideSetup === false) {
+      backsideTotal++;
+      if (t.mistakesCount > 0) backsideFlawed++;
     }
   });
-
-  let topSym = null;
-  let maxSymQty = 0;
-  symbolMap.forEach((qty, sym) => {
-    if (qty > maxSymQty) {
-      maxSymQty = qty;
-      topSym = {
-        symbol: sym,
-        qty,
-        pct: totalQty > 0 ? Math.round((qty / totalQty) * 100) : 0,
-      };
-    }
-  });
-
-  let peakHour = null;
-  let maxHourFills = 0;
-  hourMap.forEach((cnt, h) => {
-    if (cnt > maxHourFills) {
-      maxHourFills = cnt;
-      const hStr = String(h).padStart(2, '0') + ':00';
-      const hNext = String(h + 1).padStart(2, '0') + ':00';
-      peakHour = {
-        hour: h,
-        label: `${hStr}–${hNext}`,
-        count: cnt,
-        pct: list.length > 0 ? Math.round((cnt / list.length) * 100) : 0,
-      };
-    }
-  });
-
-  const feePerShare = totalQty > 0 ? totalFees / totalQty : 0;
 
   return {
-    count: list.length,
-    totalQty,
-    totalTurnover,
-    totalFees,
-    avgSize: list.length > 0 ? Math.round(totalQty / list.length) : 0,
-    minQty: minQty === Infinity ? 0 : minQty,
-    maxQty: maxQty === -Infinity ? 0 : maxQty,
-    avgFillsPerDay,
-    maxDayFills,
-    peakDay,
-    symbolsCount: symbolMap.size,
-    topSymbol: topSym,
-    peakHour,
-    feePerShare,
-    buyCount,
-    sellCount,
+    frontside: {
+      total: frontsideTotal,
+      flawed: frontsideFlawed,
+      rate: frontsideTotal > 0 ? Number(((frontsideFlawed / frontsideTotal) * 100).toFixed(1)) : 0,
+    },
+    backside: {
+      total: backsideTotal,
+      flawed: backsideFlawed,
+      rate: backsideTotal > 0 ? Number(((backsideFlawed / backsideTotal) * 100).toFixed(1)) : 0,
+    },
   };
 });
 
-// Group by Date rows (each date contains grouped round-trip trades!)
-const byDateRows = computed(() => {
-  const map = new Map();
-  filteredTransactions.value.forEach((t) => {
-    const d = t.tradeDate || 'Unknown';
-    let g = map.get(d);
-    if (!g) {
-      g = {
-        date: d,
-        count: 0,
-        qty: 0,
-        buyQty: 0,
-        sellQty: 0,
-        buyGross: 0,
-        sellGross: 0,
-        buyNet: 0,
-        sellNet: 0,
-        fees: 0,
-        symbols: new Set(),
-        transactions: [],
+// Behavioral Pattern: Session Breakdown
+const sessionImpactStats = computed(() => {
+  const map = {};
+  TRADING_SESSIONS.forEach((s) => {
+    map[s.id] = { ...s, total: 0, flawed: 0, mistakes: 0 };
+  });
+
+  filteredTrades.value.forEach((t) => {
+    const sId = t.session || detectSessionFromTime(t.tradeTime, t.tradeDate);
+    if (!map[sId]) {
+      map[sId] = {
+        id: sId,
+        label: sId,
+        hours: '',
+        color: '#94a3b8',
+        bg: 'rgba(148, 163, 184, 0.15)',
+        total: 0,
+        flawed: 0,
+        mistakes: 0,
       };
-      map.set(d, g);
     }
-    g.count += 1;
-    g.qty += t.quantity;
-    g.fees += t.totalFees;
-    g.transactions.push(t);
-    if (t.symbol) g.symbols.add(t.symbol);
-    if (t.tradeType === 'B') {
-      g.buyQty += t.quantity;
-      g.buyGross += t.grossAmount;
-      g.buyNet += t.netAmount;
-    } else if (t.tradeType === 'S') {
-      g.sellQty += t.quantity;
-      g.sellGross += t.grossAmount;
-      g.sellNet += t.netAmount;
+    map[sId].total++;
+    if (t.mistakesCount > 0) {
+      map[sId].flawed++;
+      map[sId].mistakes += t.mistakesCount;
     }
   });
 
-  return [...map.values()]
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .map((g) => ({
-      ...g,
-      symbolsCount: g.symbols.size,
-      netDiff: g.sellNet - g.buyNet,
-      trades: groupTransactionsIntoTrades(g.transactions, tradeMetadata.value),
-    }));
+  return Object.values(map).map((s) => ({
+    ...s,
+    flawRate: s.total > 0 ? Number(((s.flawed / s.total) * 100).toFixed(1)) : 0,
+  }));
 });
 
-// Group by Symbol rows
-const bySymbolRows = computed(() => {
-  const map = new Map();
-  filteredTransactions.value.forEach((t) => {
-    const sym = t.symbol || 'OTHER';
-    let g = map.get(sym);
-    if (!g) {
-      g = {
-        symbol: sym,
-        count: 0,
-        qty: 0,
-        buyQty: 0,
-        sellQty: 0,
-        buyGross: 0,
-        sellGross: 0,
-        buyNet: 0,
-        sellNet: 0,
-        fees: 0,
-        dates: new Set(),
-      };
-      map.set(sym, g);
+// Helper to get local date string YYYY-MM-DD
+const getLocalDateString = (d) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Date-filtered trades specifically for the Trading Log tab
+const dateFilteredTrades = computed(() => {
+  let list = enrichedTrades.value;
+  const todayStr = getDefaultCurrentDateStr();
+
+  if (tradeLogDateFilter.value === 'TODAY') {
+    list = list.filter((t) => (t.tradeDate || '') === todayStr);
+  } else if (tradeLogDateFilter.value === 'LAST_WEEK') {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    const lastWeekStartStr = getLocalDateString(d);
+    list = list.filter((t) => (t.tradeDate || '') >= lastWeekStartStr);
+  } else if (tradeLogDateFilter.value === 'LAST_MONTH') {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    const lastMonthStartStr = getLocalDateString(d);
+    list = list.filter((t) => (t.tradeDate || '') >= lastMonthStartStr);
+  } else if (tradeLogDateFilter.value === 'CUSTOM') {
+    if (customStartDate.value) {
+      list = list.filter((t) => (t.tradeDate || '') >= customStartDate.value);
     }
-    g.count += 1;
-    g.qty += t.quantity;
-    g.fees += t.totalFees;
-    if (t.tradeDate) g.dates.add(t.tradeDate);
-    if (t.tradeType === 'B') {
-      g.buyQty += t.quantity;
-      g.buyGross += t.grossAmount;
-      g.buyNet += t.netAmount;
-    } else if (t.tradeType === 'S') {
-      g.sellQty += t.quantity;
-      g.sellGross += t.grossAmount;
-      g.sellNet += t.netAmount;
+    if (customEndDate.value) {
+      list = list.filter((t) => (t.tradeDate || '') <= customEndDate.value);
     }
+  }
+
+  return list;
+});
+
+// Stats for the active date range in Trade Log (for Clean / Flawed discipline buttons)
+const dateFilteredStats = computed(() => {
+  const list = dateFilteredTrades.value;
+  let clean = 0;
+  let flaws = 0;
+  list.forEach((t) => {
+    if (t.isClean) clean++;
+    else flaws++;
   });
-
-  return [...map.values()]
-    .sort((a, b) => b.qty - a.qty)
-    .map((g) => ({
-      ...g,
-      datesCount: g.dates.size,
-      openQty: g.buyQty - g.sellQty,
-      netDiff: g.sellNet - g.buyNet,
-    }));
+  return {
+    total: list.length,
+    clean,
+    flaws,
+  };
 });
 
-// Charts data
-const dailyChartData = computed(() => {
-  return [...byDateRows.value]
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-14)
-    .map((r) => ({
-      date: r.date,
-      count: r.count,
-      qty: r.qty,
-      buyQty: r.buyQty,
-      sellQty: r.sellQty,
-      netDiff: r.netDiff,
-    }));
+// Robust trade comparator (descending by default)
+const compareTrades = (a, b) => {
+  // 1. Compare Date (YYYY-MM-DD)
+  const dateA = a.tradeDate || '';
+  const dateB = b.tradeDate || '';
+  if (dateA !== dateB) {
+    return sortOrder.value === 'asc' ? dateA.localeCompare(dateB) : dateB.localeCompare(dateA);
+  }
+
+  // 2. Compare Time (normalize HH:MM[:SS] with zero-padding)
+  const normTime = (t) => {
+    if (!t) return '00:00:00';
+    const parts = String(t).trim().split(':');
+    const h = (parts[0] || '0').padStart(2, '0');
+    const m = (parts[1] || '0').padStart(2, '0');
+    const s = (parts[2] || '0').padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  };
+  const timeA = normTime(a.tradeTime);
+  const timeB = normTime(b.tradeTime);
+  if (timeA !== timeB) {
+    return sortOrder.value === 'asc' ? timeA.localeCompare(timeB) : timeB.localeCompare(timeA);
+  }
+
+  // 3. Compare Sequence within day
+  const seqA = Number(a.tradeSequence) || 0;
+  const seqB = Number(b.tradeSequence) || 0;
+  if (seqA !== seqB) {
+    return sortOrder.value === 'asc' ? seqA - seqB : seqB - seqA;
+  }
+
+  // 4. Compare creation timestamp or ID
+  const getTs = (tr) => {
+    if (tr.createdAt) {
+      const p = Date.parse(tr.createdAt);
+      if (!isNaN(p)) return p;
+    }
+    const match = String(tr.id || '').match(/JT-(\d+)/);
+    if (match) return Number(match[1]);
+    return 0;
+  };
+  const tsA = getTs(a);
+  const tsB = getTs(b);
+  if (tsA !== tsB) {
+    return sortOrder.value === 'asc' ? tsA - tsB : tsB - tsA;
+  }
+
+  const idA = String(a.id || '');
+  const idB = String(b.id || '');
+  return sortOrder.value === 'asc' ? idA.localeCompare(idB) : idB.localeCompare(idA);
+};
+
+// Filtered Trades for Table Log Display
+const displayedTrades = computed(() => {
+  let list = dateFilteredTrades.value;
+
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toUpperCase();
+    list = list.filter(
+      (t) =>
+        (t.symbol || '').toUpperCase().includes(q) ||
+        (t.notes || '').toUpperCase().includes(q) ||
+        (t.entryDeviationReason || '').toUpperCase().includes(q)
+    );
+  }
+
+  if (selectedMistakeFilter.value !== 'ALL') {
+    list = list.filter((t) => t.mistakes.some((m) => m.id === selectedMistakeFilter.value));
+  }
+
+  if (selectedDisciplineFilter.value === 'CLEAN') {
+    list = list.filter((t) => t.isClean);
+  } else if (selectedDisciplineFilter.value === 'MISTAKES') {
+    list = list.filter((t) => !t.isClean);
+  }
+
+  if (selectedSessionFilter.value !== 'ALL') {
+    list = list.filter((t) => (t.session || detectSessionFromTime(t.tradeTime, t.tradeDate)) === selectedSessionFilter.value);
+  }
+
+  // Sort trades (descending by default)
+  return [...list].sort(compareTrades);
 });
 
-const maxDailyQty = computed(() => {
-  if (!dailyChartData.value.length) return 1;
-  return Math.max(...dailyChartData.value.map((d) => Math.max(d.buyQty, d.sellQty)), 1);
+// Recent trades strictly sorted descending
+const recentTrades = computed(() => {
+  return [...enrichedTrades.value].sort(compareTrades).slice(0, 5);
 });
 
-// ---------------------------------------------------------------- Export
-const isExportingExcel = ref(false);
-const isExportingPdf = ref(false);
+// Date filter actions
+const setDateFilter = (filterKey) => {
+  tradeLogDateFilter.value = filterKey;
+  isCalendarPickerOpen.value = false;
+};
 
-const formatTradeCellValue = (t, colKey) => {
-  switch (colKey) {
-    case 'setupType': {
-      const meta = tradeMetadata.value[t.tradeId] || {};
-      return meta.setupType || t.setupType || '';
-    }
-    case 'watchedValue': {
-      const meta = tradeMetadata.value[t.tradeId] || {};
-      return meta.watchedValue || t.watchedValue || '';
-    }
-    case 'comment': {
-      const meta = tradeMetadata.value[t.tradeId] || {};
-      return meta.comment || meta.notes || t.comment || t.notes || '';
-    }
-    case 'images': {
-      const meta = tradeMetadata.value[t.tradeId] || {};
-      const count = meta.images?.length || t.images?.length || 0;
-      return count > 0 ? `${count} imgs` : '';
-    }
-    case 'actions':
-      return '';
-    case 'trd_type':
-      return t.trd_type ?? 'null';
-    case 'qty':
-      return t.qty != null ? num(t.qty) : 'null';
-    case 'price':
-      return t.price != null ? '$' + Number(t.price).toFixed(4).replace(/0+$/, '').replace(/\.$/, '') : 'null';
-    case 'g_amt':
-      return t.g_amt != null ? fmtMoney(t.g_amt) : 'null';
-    case 'n_amt':
-      return t.n_amt != null ? fmtMoney(t.n_amt, 4) : 'null';
-    case 'exec_time':
-      return t.exec_time != null ? fmtExecTime(t.exec_time) : 'null';
-    case 'comm':
-      return t.comm != null ? fmtMoney(t.comm, 4) : 'null';
-    default:
-      return t[colKey] != null ? String(t[colKey]) : 'null';
+const toggleCalendarPicker = () => {
+  isCalendarPickerOpen.value = !isCalendarPickerOpen.value;
+  if (isCalendarPickerOpen.value && !customStartDate.value && !customEndDate.value) {
+    const todayStr = getDefaultCurrentDateStr();
+    customStartDate.value = todayStr;
+    customEndDate.value = todayStr;
   }
 };
 
-const formatDateCellValue = (r, colKey) => {
-  switch (colKey) {
-    case 'trade_dt':
-      return r.date || '—';
-    case 'records':
-      return num(r.count);
-    case 'symbols':
-      return String(r.symbolsCount);
-    case 'qty':
-      return num(r.qty);
-    case 'buyQty':
-      return num(r.buyQty);
-    case 'sellQty':
-      return num(r.sellQty);
-    case 'buyGross':
-      return fmtMoney(r.buyGross);
-    case 'sellGross':
-      return fmtMoney(r.sellGross);
-    case 'netDiff':
-      return fmtSigned(r.netDiff);
-    case 'fees':
-      return fmtMoney(r.fees, 4);
-    default:
-      return r[colKey] != null ? String(r[colKey]) : '—';
+const applyCustomRange = () => {
+  let start = customStartDate.value;
+  let end = customEndDate.value;
+  if (start && end && start > end) {
+    [start, end] = [end, start];
+    customStartDate.value = start;
+    customEndDate.value = end;
+  }
+  tradeLogDateFilter.value = 'CUSTOM';
+  isCalendarPickerOpen.value = false;
+};
+
+const clearCustomRange = () => {
+  customStartDate.value = '';
+  customEndDate.value = '';
+  tradeLogDateFilter.value = 'TODAY';
+  isCalendarPickerOpen.value = false;
+};
+
+const customRangeLabel = computed(() => {
+  if (!customStartDate.value && !customEndDate.value) return '';
+  if (customStartDate.value && customEndDate.value) {
+    if (customStartDate.value === customEndDate.value) {
+      return formatTradeDateTime(customStartDate.value);
+    }
+    return `${formatTradeDateTime(customStartDate.value)} - ${formatTradeDateTime(customEndDate.value)}`;
+  }
+  if (customStartDate.value) {
+    return `≥ ${formatTradeDateTime(customStartDate.value)}`;
+  }
+  return `≤ ${formatTradeDateTime(customEndDate.value)}`;
+});
+
+const toggleSortOrder = () => {
+  sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc';
+};
+
+const handleWindowClick = (e) => {
+  if (isCalendarPickerOpen.value && calendarPickerRef.value && !calendarPickerRef.value.contains(e.target)) {
+    isCalendarPickerOpen.value = false;
   }
 };
 
-const exportExcel = () => {
-  if (!byDateRows.value.length) return;
-  const wb = XLSX.utils.book_new();
-  const tradeHeaders = visibleTradeCols.value.map((c) => c.label);
-  const allTradesData = [];
-  byDateRows.value.forEach((r) => {
-    r.transactions.forEach((t) => {
-      allTradesData.push(visibleTradeCols.value.map((c) => formatTradeCellValue(t, c.key)));
-    });
-  });
+// Live Form Mistakes Preview
+const liveFormMistakes = computed(() => {
+  return evaluateTradeMistakes(form.value);
+});
 
-  const wsTrades = XLSX.utils.aoa_to_sheet([tradeHeaders, ...allTradesData]);
-  XLSX.utils.book_append_sheet(wb, wsTrades, 'Journal Transactions');
-
-  const dateHeaders = visibleDateCols.value.map((c) => c.label);
-  const allDaysData = byDateRows.value.map((r) => visibleDateCols.value.map((c) => formatDateCellValue(r, c.key)));
-  const wsDays = XLSX.utils.aoa_to_sheet([dateHeaders, ...allDaysData]);
-  XLSX.utils.book_append_sheet(wb, wsDays, 'Daily Summaries');
-
-  XLSX.writeFile(wb, `Trade_Journal_${getTodayDateStr()}.xlsx`);
+// ----------------------------------------------------------------------------
+// Form Methods (Add / Edit / Delete)
+// ----------------------------------------------------------------------------
+const openAddModal = () => {
+  editingTradeId.value = null;
+  const currentTime = getDefaultCurrentTimeStr();
+  const currentDate = getDefaultCurrentDateStr();
+  form.value = {
+    ...initialFormState(),
+    tradeDate: currentDate,
+    tradeTime: currentTime,
+    session: detectSessionFromTime(currentTime, currentDate),
+  };
+  isOffcanvasOpen.value = true;
 };
 
-const exportPdf = () => {
-  if (!byDateRows.value.length) return;
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-  doc.setFontSize(16);
-  doc.text('Trading Journal & Performance Report', 40, 40);
+const openEditModal = (trade) => {
+  if (!trade) return;
+  editingTradeId.value = trade.id;
+  form.value = {
+    ...initialFormState(),
+    ...JSON.parse(JSON.stringify(trade)),
+    id: trade.id,
+    screenshots: Array.isArray(trade.screenshots) ? [...trade.screenshots] : [],
+    session: trade.session || detectSessionFromTime(trade.tradeTime, trade.tradeDate),
+  };
+  isOffcanvasOpen.value = true;
+};
 
-  const headers = [visibleTradeCols.value.map((c) => c.label)];
-  const body = [];
-  byDateRows.value.forEach((r) => {
-    r.transactions.forEach((t) => {
-      body.push(visibleTradeCols.value.map((c) => formatTradeCellValue(t, c.key)));
+const closeOffcanvas = () => {
+  isOffcanvasOpen.value = false;
+  editingTradeId.value = null;
+};
+
+const handleImageUpload = async (e) => {
+  const files = e.target?.files;
+  if (!files || !files.length) return;
+  const fileArray = Array.from(files).filter((f) => f.type.startsWith('image/'));
+  if (!fileArray.length) return;
+
+  for (const file of fileArray) {
+    const dataUrl = await compressImageFile(file);
+    if (dataUrl) {
+      form.value.screenshots.push(dataUrl);
+    }
+  }
+  showToast(`Added ${fileArray.length} screenshot${fileArray.length > 1 ? 's' : ''}!`, 'success');
+  e.target.value = '';
+};
+
+const handleDropImages = async (e) => {
+  e.preventDefault();
+  const files = e.dataTransfer?.files;
+  if (!files || !files.length) return;
+  const fileArray = Array.from(files).filter((f) => f.type.startsWith('image/'));
+  if (!fileArray.length) return;
+
+  for (const file of fileArray) {
+    const dataUrl = await compressImageFile(file);
+    if (dataUrl) {
+      form.value.screenshots.push(dataUrl);
+    }
+  }
+  showToast(`Added ${fileArray.length} screenshot${fileArray.length > 1 ? 's' : ''}!`, 'success');
+};
+
+const removeScreenshot = (index) => {
+  form.value.screenshots.splice(index, 1);
+};
+
+const saveTrade = async () => {
+  if (!form.value.symbol.trim()) {
+    showToast('Please enter a Stock Symbol / Ticker', 'error');
+    return;
+  }
+  if (!form.value.entryPrice || Number(form.value.entryPrice) <= 0) {
+    showToast('Please enter a valid Entry Price', 'error');
+    return;
+  }
+
+  const cleanSymbol = form.value.symbol.trim().toUpperCase();
+  const currentTime = getDefaultCurrentTimeStr();
+  const currentDate = getDefaultCurrentDateStr();
+
+  const tradePayload = {
+    ...form.value,
+    notes: cleanHtmlNotes(form.value.notes || ''),
+    symbol: cleanSymbol,
+    tradeDate: form.value.tradeDate || currentDate,
+    tradeTime: form.value.tradeTime || currentTime,
+    session: form.value.session || detectSessionFromTime(form.value.tradeTime || currentTime, form.value.tradeDate || currentDate),
+    entryPrice: Number(form.value.entryPrice),
+    tradeSequence: Number(form.value.tradeSequence) || 1,
+    ema9Value: form.value.ema9Value ? Number(form.value.ema9Value) : null,
+    vwapValue: form.value.vwapValue ? Number(form.value.vwapValue) : null,
+    nearestResistance: form.value.nearestResistance ? Number(form.value.nearestResistance) : null,
+    plannedEntryPrice: form.value.plannedEntryPrice ? Number(form.value.plannedEntryPrice) : null,
+    stopLossPrice: form.value.stopLossPrice ? Number(form.value.stopLossPrice) : null,
+  };
+
+  const isEditing = Boolean(editingTradeId.value);
+  if (isEditing) {
+    tradePayload.id = editingTradeId.value;
+    tradePayload.updatedAt = new Date().toISOString();
+  } else {
+    tradePayload.id = `JT-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    tradePayload.createdAt = new Date().toISOString();
+  }
+
+  try {
+    // 1. Immediately update in-memory trades so UI never flashes or loses data
+    const targetId = String(tradePayload.id).trim();
+    const existingIdx = trades.value.findIndex((t) => t && String(t.id || '').trim() === targetId);
+    if (existingIdx >= 0) {
+      trades.value[existingIdx] = { ...trades.value[existingIdx], ...tradePayload };
+    } else {
+      trades.value.unshift({ ...tradePayload });
+    }
+
+    // 2. Persist to data/journal_trades.json on disk (and sync local caches)
+    await persistBehavioralTrades(trades.value);
+
+    closeOffcanvas();
+    showToast(isEditing ? `Trade ${cleanSymbol} updated in JSON file!` : `Trade ${cleanSymbol} saved to JSON file!`, 'success');
+    getJournalFileInfo().then((info) => { if (info) jsonFileInfo.value = info; });
+  } catch (err) {
+    console.error('Save trade error:', err);
+    showToast('Failed to save trade. Please try again.', 'error');
+  }
+};
+
+const deleteTrade = async (id) => {
+  if (!confirm('Are you sure you want to delete this trade record?')) return;
+  try {
+    const targetId = String(id || '').trim();
+    selectedTradeIds.value.delete(id);
+    trades.value = trades.value.filter((t) => t && String(t.id || '').trim() !== targetId);
+    await persistBehavioralTrades(trades.value);
+    showToast('Trade record removed from JSON file', 'info');
+    getJournalFileInfo().then((info) => { if (info) jsonFileInfo.value = info; });
+  } catch (err) {
+    console.error('Delete error:', err);
+    showToast('Failed to delete trade', 'error');
+  }
+};
+
+const toggleExpandTrade = (id) => {
+  if (expandedTradeIds.value.has(id)) {
+    expandedTradeIds.value.delete(id);
+  } else {
+    expandedTradeIds.value.add(id);
+  }
+};
+
+// Clear All Trades
+const clearAllTrades = async () => {
+  if (!confirm('Are you sure you want to delete ALL trades from your journal? An archive backup of data/journal_trades.json will be saved.')) return;
+  await clearAllBehavioralTrades();
+  selectedTradeIds.value.clear();
+  trades.value = [];
+  showToast('All journal records cleared (backup created)', 'info');
+  getJournalFileInfo().then((info) => { if (info) jsonFileInfo.value = info; });
+};
+
+// Weekly Navigation
+const prevWeek = () => {
+  const d = new Date(targetWeekMonday.value);
+  d.setDate(d.getDate() - 7);
+  targetWeekMonday.value = d;
+};
+
+const nextWeek = () => {
+  const d = new Date(targetWeekMonday.value);
+  d.setDate(d.getDate() + 7);
+  targetWeekMonday.value = d;
+};
+
+const resetToCurrentWeek = () => {
+  targetWeekMonday.value = getWeekDateRange(new Date()).start;
+};
+
+// Export to JSON Backup
+const exportDataJson = () => {
+  const blob = new Blob([JSON.stringify(trades.value, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `trading_journal_backup_${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Journal data exported to JSON', 'success');
+};
+
+// ----------------------------------------------------------------------------
+// Trade Selection Methods
+// ----------------------------------------------------------------------------
+const isTradeSelected = (id) => selectedTradeIds.value.has(id);
+
+const toggleSelectTrade = (id) => {
+  if (selectedTradeIds.value.has(id)) {
+    selectedTradeIds.value.delete(id);
+  } else {
+    selectedTradeIds.value.add(id);
+  }
+};
+
+const isAllSelected = computed(() => {
+  return displayedTrades.value.length > 0 && displayedTrades.value.every((t) => selectedTradeIds.value.has(t.id));
+});
+
+const isIndeterminate = computed(() => {
+  if (displayedTrades.value.length === 0) return false;
+  const count = displayedTrades.value.filter((t) => selectedTradeIds.value.has(t.id)).length;
+  return count > 0 && count < displayedTrades.value.length;
+});
+
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    displayedTrades.value.forEach((t) => selectedTradeIds.value.delete(t.id));
+  } else {
+    displayedTrades.value.forEach((t) => selectedTradeIds.value.add(t.id));
+  }
+};
+
+const selectAllTrades = () => {
+  displayedTrades.value.forEach((t) => selectedTradeIds.value.add(t.id));
+};
+
+const deselectAllTrades = () => {
+  selectedTradeIds.value.clear();
+};
+
+// ----------------------------------------------------------------------------
+// Single-Page Trade PDF Export Engine (jsPDF)
+// ----------------------------------------------------------------------------
+const getImageDimensions = (src) => {
+  return new Promise((resolve) => {
+    if (!src || typeof src !== 'string') return resolve(null);
+    const img = new Image();
+    img.onload = () => {
+      resolve({
+        width: img.naturalWidth || img.width || 800,
+        height: img.naturalHeight || img.height || 450,
+      });
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+};
+
+// Clean HTML notes from fragmented tags, noise, or split numbers across tags
+function cleanHtmlNotes(html) {
+  if (!html) return '';
+  let cleaned = String(html);
+
+  // 1. Remove useless spans that have no meaningful style (e.g. empty spans, class="", data-*, animation-*)
+  cleaned = cleaned.replace(/<span(?:\s+(?:class=["']\s*["']|data-[\w-]+=(?:"[^"]*"|'[^']*')|style=["'](?:--[\w-]+:[^"';]+;?\s*)*["']))*\s*>(.*?)<\/span>/gi, '$1');
+
+  // 2. Fix decimal numbers split across tags: e.g. "1.</span>94" or "1.<span ...>23"
+  cleaned = cleaned.replace(/(\d+[.,])\s*(<\/(?:span|b|strong|em|i)>)\s*(<(?:span|b|strong|em|i)[^>]*>)?\s*(\d+)/gi, (m, p1, closeTag, openTag, p2) => {
+    return `${p1}${p2}${closeTag || ''}${openTag || ''}`;
+  });
+  cleaned = cleaned.replace(/(\d+[.,])\s*(<(?:span|b|strong|em|i)[^>]*>)\s*(\d+)/gi, '$2$1$3');
+
+  // 3. Fix parentheses split from numbers across tags: e.g. "(</span>1.94", "(<span ...>1.94", "1.94</span>)"
+  cleaned = cleaned.replace(/([(])\s*(<\/(?:span|b|strong|em|i)>)\s*(<(?:span|b|strong|em|i)[^>]*>)?\s*(\d+)/gi, '$2$3$1$4');
+  cleaned = cleaned.replace(/([(])\s*(<(?:span|b|strong|em|i)[^>]*>)\s*(\d+)/gi, '$2$1$3');
+  cleaned = cleaned.replace(/(\d+(?:[.,]\d+)?)\s*(<\/(?:span|b|strong|em|i)>)\s*(<(?:span|b|strong|em|i)[^>]*>)?\s*([)])/gi, '$1$4$2$3');
+  cleaned = cleaned.replace(/(\d+(?:[.,]\d+)?)\s*(<(?:span|b|strong|em|i)[^>]*>)\s*([)])/gi, '$1$3$2');
+
+  return cleaned;
+}
+
+// Helper to protect and isolate numbers, currencies, decimals, ranges, indicator tokens, and parenthesized expressions in RTL Arabic text
+function formatBidiNumbers(html) {
+  if (!html) return '';
+  // Clean empty/split spans and strip any existing bidi-num spans to ensure idempotency
+  const cleanHtml = cleanHtmlNotes(html).replace(/<span\s+class=["']bidi-num["'][^>]*>(.*?)<\/span>/gi, '$1');
+
+  // Matches parenthesized numbers/indicators/terms like (1.94), (9 EMA), (VWAP), (Freeze),
+  // as well as bare numbers, currencies, percentages, ranges, and indicators like 1.94, +5%, -$50, 14.20 - 15.00
+  const bidiNumberPattern = /((?:\(\s*[+\-±]?\$?\d+(?:[.,:\/]\d+)*(?:\s*[-–—]\s*\$?\d+(?:[.,:\/]\d+)*)?%?\$?(?:\s*(?:EMA|SMA|VWAP|ema|sma|vwap|min|sec|shares?|pts?|[mhdkMK]))?\s*\))|(?:\(\s*[A-Za-z0-9._\-+/%$][A-Za-z0-9\s._\-+/%$]*\s*\))|(?:[+\-±]?\$?\d+(?:[.,:\/]\d+)*(?:\s*[-–—]\s*\$?\d+(?:[.,:\/]\d+)*)?%?\$?(?:\s*(?:EMA|SMA|VWAP|ema|sma|vwap|min|sec|shares?|pts?|[mhdkMK]))?))/g;
+
+  return cleanHtml.replace(/(<[^>]+>)|([^<]+)/g, (match, tag, text) => {
+    if (tag) return tag;
+    return text.replace(bidiNumberPattern, (num) => {
+      const trimmed = num.trim();
+      if (!trimmed || !/[0-9a-zA-Z]/.test(trimmed)) return num;
+      const lead = num.match(/^\s*/)[0];
+      const trail = num.match(/\s*$/)[0];
+      return `${lead}<span class="bidi-num" dir="ltr">${trimmed}</span>${trail}`;
     });
   });
+}
 
-  autoTable(doc, {
-    head: headers,
-    body: body,
-    startY: 60,
-    styles: { fontSize: 8 },
-  });
+const renderHtmlToPdfImage = async (htmlContent, widthPt) => {
+  if (!htmlContent || !htmlContent.trim()) return null;
 
-  doc.save(`Trade_Journal_${getTodayDateStr()}.pdf`);
+  const bidiHtml = formatBidiNumbers(htmlContent);
+
+  const container = document.createElement('div');
+  container.className = 'pdf-html-render-temp';
+  container.style.position = 'fixed';
+  container.style.left = '-9999px';
+  container.style.top = '0';
+  container.style.width = `${Math.round(widthPt * 1.5)}px`;
+  container.style.padding = '10px 14px';
+  container.style.background = '#ffffff';
+  container.style.color = '#0f172a';
+  container.style.fontFamily = "'Segoe UI', Tahoma, Arial, sans-serif";
+  container.style.fontSize = '16px';
+  container.style.lineHeight = '1.75';
+  container.style.direction = 'rtl';
+  container.style.textAlign = 'right';
+  container.style.letterSpacing = 'normal';
+  container.style.boxSizing = 'border-box';
+  container.setAttribute('dir', 'rtl');
+
+  const styleElem = document.createElement('style');
+  styleElem.textContent = `
+    .pdf-html-render-temp { direction: rtl !important; text-align: right !important; }
+    .pdf-html-render-temp p,
+    .pdf-html-render-temp div,
+    .pdf-html-render-temp li,
+    .pdf-html-render-temp h2,
+    .pdf-html-render-temp h3 {
+      direction: rtl !important;
+      text-align: right !important;
+      letter-spacing: normal !important;
+      unicode-bidi: isolate !important;
+    }
+    .pdf-html-render-temp .bidi-num {
+      direction: ltr !important;
+      unicode-bidi: isolate !important;
+      display: inline-block !important;
+      text-align: left !important;
+      white-space: nowrap !important;
+      font-family: 'Segoe UI', Tahoma, Arial, sans-serif !important;
+    }
+    .pdf-html-render-temp ul { list-style: none !important; margin: 4px 0 !important; padding: 0 !important; direction: rtl !important; text-align: right !important; }
+    .pdf-html-render-temp ul li { position: relative !important; padding-right: 22px !important; padding-left: 0 !important; margin: 4px 0 !important; direction: rtl !important; text-align: right !important; list-style: none !important; font-size: 16px !important; }
+    .pdf-html-render-temp ul li::before { content: '•' !important; position: absolute !important; right: 2px !important; top: -1px !important; color: #0284c7 !important; font-size: 18px !important; line-height: 1.4 !important; }
+    .pdf-html-render-temp ol { margin: 4px 0 !important; padding-right: 26px !important; padding-left: 0 !important; list-style-position: inside !important; direction: rtl !important; text-align: right !important; font-size: 16px !important; }
+    .pdf-html-render-temp ol li { margin: 3px 0 !important; direction: rtl !important; text-align: right !important; }
+    .pdf-html-render-temp h2, .pdf-html-render-temp h3 { color: #0284c7 !important; margin: 6px 0 3px 0 !important; font-weight: 700 !important; font-size: 18px !important; }
+    .pdf-html-render-temp p { margin: 4px 0 !important; font-size: 16px !important; }
+    .pdf-html-render-temp strong, .pdf-html-render-temp b { font-weight: 700 !important; color: #000000 !important; }
+  `;
+  container.appendChild(styleElem);
+
+  const contentWrapper = document.createElement('div');
+  contentWrapper.setAttribute('dir', 'rtl');
+  contentWrapper.style.direction = 'rtl';
+  contentWrapper.style.textAlign = 'right';
+  contentWrapper.innerHTML = bidiHtml;
+  container.appendChild(contentWrapper);
+
+  document.body.appendChild(container);
+
+  try {
+    const canvas = await html2canvas(container, {
+      scale: 2,
+      backgroundColor: '#ffffff',
+      logging: false,
+      useCORS: true,
+    });
+    const imgData = canvas.toDataURL('image/png');
+    const aspect = canvas.height / canvas.width;
+    return { imgData, aspect, canvasW: canvas.width, canvasH: canvas.height };
+  } catch (e) {
+    console.warn('html2canvas render error for trade notes', e);
+    return null;
+  } finally {
+    if (document.body.contains(container)) {
+      document.body.removeChild(container);
+    }
+  }
+};
+
+// FIFO trade comparator for PDF export (earliest/first-entered trades first)
+const fifoSortTrades = (a, b) => {
+  // 1. Compare Date (YYYY-MM-DD ascending)
+  const dateA = a.tradeDate || '';
+  const dateB = b.tradeDate || '';
+  if (dateA !== dateB) return dateA.localeCompare(dateB);
+
+  // 2. Compare Time (normalized HH:MM[:SS] ascending)
+  const normTime = (t) => {
+    if (!t) return '00:00:00';
+    const parts = String(t).trim().split(':');
+    const h = (parts[0] || '0').padStart(2, '0');
+    const m = (parts[1] || '0').padStart(2, '0');
+    const s = (parts[2] || '0').padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  };
+  const timeA = normTime(a.tradeTime);
+  const timeB = normTime(b.tradeTime);
+  if (timeA !== timeB) return timeA.localeCompare(timeB);
+
+  // 3. Compare Sequence within day (ascending)
+  const seqA = Number(a.tradeSequence) || 0;
+  const seqB = Number(b.tradeSequence) || 0;
+  if (seqA !== seqB) return seqA - seqB;
+
+  // 4. Compare creation timestamp or ID (ascending)
+  const getTs = (tr) => {
+    if (tr.createdAt) {
+      const p = Date.parse(tr.createdAt);
+      if (!isNaN(p)) return p;
+    }
+    const match = String(tr.id || '').match(/JT-(\d+)/);
+    if (match) return Number(match[1]);
+    return 0;
+  };
+  const tsA = getTs(a);
+  const tsB = getTs(b);
+  if (tsA !== tsB) return tsA - tsB;
+
+  return String(a.id || '').localeCompare(String(b.id || ''));
+};
+
+const exportSelectedTradesPdf = async () => {
+  // Determine trades to export: either explicitly selected, or all currently displayed/filtered
+  const rawTrades = selectedTradeIds.value.size > 0
+    ? displayedTrades.value.filter((t) => selectedTradeIds.value.has(t.id))
+    : displayedTrades.value;
+
+  // Strict FIFO: first entered trade is first shown in the PDF
+  const tradesToExport = [...rawTrades].sort(fifoSortTrades);
+
+  if (!tradesToExport || tradesToExport.length === 0) {
+    showToast('No trades available to export', 'error');
+    return;
+  }
+
+  isExportingPdf.value = true;
+  showToast(`Generating PDF report for ${tradesToExport.length} trade${tradesToExport.length > 1 ? 's' : ''}...`, 'info');
+
+  // Allow UI time to display spinner and toast
+  await new Promise((r) => setTimeout(r, 60));
+
+  try {
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'pt',
+      format: 'a4',
+    });
+
+    const pageWidth = doc.internal.pageSize.getWidth(); // 595.28 pt
+    const pageHeight = doc.internal.pageSize.getHeight(); // 841.89 pt
+    const marginX = 26;
+    const contentWidth = pageWidth - (marginX * 2); // 543.28 pt
+
+    // Pre-load image dimensions for all trades
+    const tradeImageMetas = [];
+    for (const trade of tradesToExport) {
+      const shots = Array.isArray(trade.screenshots) ? trade.screenshots : [];
+      const metas = [];
+      for (const shot of shots) {
+        const dim = await getImageDimensions(shot);
+        metas.push(dim);
+      }
+      tradeImageMetas.push(metas);
+    }
+
+    // Pre-render HTML notes for all trades using browser DOM & html2canvas
+    const tradeNotesImages = [];
+    for (const trade of tradesToExport) {
+      if (trade.notes && trade.notes.trim()) {
+        const noteImg = await renderHtmlToPdfImage(trade.notes, contentWidth - 20);
+        tradeNotesImages.push(noteImg);
+      } else {
+        tradeNotesImages.push(null);
+      }
+    }
+
+    // Helper: Draw rounded card panel
+    const drawCard = (x, y, w, h, fill = [248, 250, 252], stroke = [226, 232, 240], radius = 4) => {
+      doc.setFillColor(fill[0], fill[1], fill[2]);
+      doc.setDrawColor(stroke[0], stroke[1], stroke[2]);
+      doc.setLineWidth(0.75);
+      doc.roundedRect(x, y, w, h, radius, radius, 'FD');
+    };
+
+    // Helper: Draw label-value item
+    const drawMetaRow = (x, y, label, value, valColor = [15, 23, 42], isBold = false) => {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(label, x, y);
+
+      const labelWidth = doc.getTextWidth(label);
+      doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(valColor[0], valColor[1], valColor[2]);
+      doc.text(String(value), x + labelWidth + 4.5, y);
+    };
+
+    for (let i = 0; i < tradesToExport.length; i++) {
+      if (i > 0) doc.addPage();
+      const trade = tradesToExport[i];
+      const metas = tradeImageMetas[i] || [];
+      const shots = Array.isArray(trade.screenshots) ? trade.screenshots : [];
+
+      // ----------------------------------------------------------------------
+      // 1. TOP HEADER BANNER (Y = 22 to 54 pt, Height = 32 pt)
+      // ----------------------------------------------------------------------
+      const headerY = 22;
+      const headerH = 32;
+      doc.setFillColor(15, 23, 42); // deep navy #0f172a
+      doc.setDrawColor(30, 41, 59);
+      doc.roundedRect(marginX, headerY, contentWidth, headerH, 4, 4, 'F');
+
+      // Left: Ticker Symbol (Centered vertically, NO date, NO time, NO direction)
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(17);
+      doc.setTextColor(255, 255, 255);
+      const symbolText = (trade.symbol || 'UNTITLED').toUpperCase();
+      doc.text(symbolText, marginX + 12, headerY + 21);
+
+      // Right: Session & Sequence Pill
+      const sessionObj = getSessionMeta(trade.session);
+      const seqText = `#${trade.tradeSequence || 1} Trade  ·  ${sessionObj.label}`;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(203, 213, 225);
+      doc.text(seqText, marginX + contentWidth - 12, headerY + 20, { align: 'right' });
+
+      let currentY = headerY + headerH + 1.5;
+
+      // ----------------------------------------------------------------------
+      // 2. SCREENSHOT SECTION (Tight fit, ~500x130, attached directly to banner)
+      // ----------------------------------------------------------------------
+      const hasScreenshots = shots.length > 0;
+
+      if (hasScreenshots) {
+        for (let sIdx = 0; sIdx < shots.length; sIdx++) {
+          const shot = shots[sIdx];
+          if (!shot) continue;
+
+          const dim = metas[sIdx] || { width: 500, height: 130 };
+          const maxW = Math.min(contentWidth - 6, 510);
+          const maxH = 136; // Target height ~130 pt as requested
+          const imgW = dim.width || 500;
+          const imgH = dim.height || 130;
+          const ratio = Math.min(maxW / imgW, maxH / imgH);
+          const rW = Math.round(imgW * ratio);
+          const rH = Math.round(imgH * ratio);
+          const shotBoxH = rH + 4; // Snug vertical fit with no dead empty space
+
+          // If adding this image row exceeds the printable page area, start a new page
+          if (currentY + shotBoxH > 800) {
+            doc.setDrawColor(226, 232, 240);
+            doc.setLineWidth(0.75);
+            doc.line(marginX, 818, marginX + contentWidth, 818);
+
+            doc.addPage();
+            // Redraw top banner on new page
+            doc.setFillColor(15, 23, 42);
+            doc.roundedRect(marginX, headerY, contentWidth, headerH, 4, 4, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(16);
+            doc.setTextColor(255, 255, 255);
+            doc.text(`${symbolText} (Cont.)`, marginX + 12, headerY + 21);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8.5);
+            doc.setTextColor(203, 213, 225);
+            doc.text(seqText, marginX + contentWidth - 12, headerY + 20, { align: 'right' });
+            currentY = headerY + headerH + 1.5;
+          }
+
+          drawCard(marginX, currentY, contentWidth, shotBoxH, [248, 250, 252], [226, 232, 240]);
+
+          const imgX = marginX + Math.round((contentWidth - rW) / 2);
+          const imgY = currentY + 2;
+
+          try {
+            const fmt = shot.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+            doc.addImage(shot, fmt, imgX, imgY, rW, rH);
+          } catch (e) {
+            console.warn(`Screenshot ${sIdx + 1} render failed`, e);
+            doc.setFont('helvetica', 'italic');
+            doc.setFontSize(8.5);
+            doc.setTextColor(148, 163, 184);
+            doc.text(`Chart Screenshot #${sIdx + 1} (Failed to load)`, marginX + (contentWidth / 2), currentY + Math.round(shotBoxH / 2), { align: 'center' });
+          }
+
+          currentY += shotBoxH + 3;
+        }
+      } else {
+        // Subtle placeholder banner when no screenshot
+        const placeH = 26;
+        drawCard(marginX, currentY, contentWidth, placeH, [248, 250, 252], [226, 232, 240]);
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184);
+        doc.text('No Chart Screenshot Attached for this Trade Record', marginX + (contentWidth / 2), currentY + 17, { align: 'center' });
+        currentY += placeH + 3;
+      }
+
+      // ----------------------------------------------------------------------
+      // 3. INTERNAL REFLECTION & NOTES (Directly below image, RTL Arabic)
+      // ----------------------------------------------------------------------
+      // Check if details need a fresh page
+      if (currentY + 246 > 810) {
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.75);
+        doc.line(marginX, 818, marginX + contentWidth, 818);
+
+        doc.addPage();
+        doc.setFillColor(15, 23, 42);
+        doc.roundedRect(marginX, headerY, contentWidth, headerH, 4, 4, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(255, 255, 255);
+        doc.text(`${symbolText} (Cont.)`, marginX + 12, headerY + 21);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(203, 213, 225);
+        doc.text(seqText, marginX + contentWidth - 12, headerY + 20, { align: 'right' });
+        currentY = headerY + headerH + 1.5;
+      }
+      // ----------------------------------------------------------------------
+      const noteImg = tradeNotesImages[i];
+      const maxAllowedNotesH = Math.max(50, 810 - 246 - currentY);
+      let notesH = 38;
+
+      if (noteImg && noteImg.imgData) {
+        const naturalH = Math.round((contentWidth - 20) * noteImg.aspect);
+        notesH = Math.min(maxAllowedNotesH, Math.max(48, naturalH + 14));
+      } else if (trade.notes && trade.notes.trim()) {
+        const plainText = trade.notes.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        const splitNotes = doc.splitTextToSize(plainText, contentWidth - 20);
+        notesH = Math.min(maxAllowedNotesH, Math.max(38, splitNotes.length * 11 + 16));
+      }
+
+      drawCard(marginX, currentY, contentWidth, notesH, [255, 255, 255], [226, 232, 240]);
+
+      if (noteImg && noteImg.imgData) {
+        const maxRenderW = contentWidth - 20;
+        const maxRenderH = notesH - 12;
+        const aspect = noteImg.aspect;
+        let rW = maxRenderW;
+        let rH = rW * aspect;
+        if (rH > maxRenderH) {
+          rH = maxRenderH;
+          rW = rH / aspect;
+        }
+        // Align right for RTL Arabic layout
+        const imgX = marginX + contentWidth - 10 - rW;
+        try {
+          doc.addImage(noteImg.imgData, 'PNG', imgX, currentY + 6, rW, rH);
+        } catch (e) {
+          console.warn('Failed to draw html2canvas image to doc', e);
+        }
+      } else if (trade.notes && trade.notes.trim()) {
+        const plainText = trade.notes.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.5);
+        doc.setTextColor(51, 65, 85);
+        const splitNotes = doc.splitTextToSize(plainText, contentWidth - 20);
+        const maxLines = Math.floor((notesH - 14) / 13);
+        const linesToDraw = splitNotes.slice(0, maxLines);
+        if (splitNotes.length > maxLines) {
+          linesToDraw[maxLines - 1] = (linesToDraw[maxLines - 1] || '').substring(0, 80) + '...';
+        }
+        let noteLineY = currentY + 17;
+        for (const line of linesToDraw) {
+          doc.text(line, marginX + contentWidth - 10, noteLineY, { align: 'right' });
+          noteLineY += 13;
+        }
+      } else {
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(8.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text('No internal reflection recorded for this trade.', marginX + (contentWidth / 2), currentY + 22, { align: 'center' });
+      }
+
+      currentY += notesH + 6;
+
+      // ----------------------------------------------------------------------
+      // 4. TWO-COLUMN DETAILS: TECHNICAL LEVELS & ENTRY DISCIPLINE
+      // ----------------------------------------------------------------------
+      const midGap = 8;
+      const subCardW = (contentWidth - midGap) / 2;
+      const subCardH = 114;
+
+      // Left Box: Technical Levels (contains Entry Price and Setup & Sequence)
+      drawCard(marginX, currentY, subCardW, subCardH, [248, 250, 252], [226, 232, 240]);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('TECHNICAL LEVELS AT ENTRY', marginX + 10, currentY + 15);
+
+      let techY = currentY + 30;
+      const entryPriceStr = trade.entryPrice ? `$${Number(trade.entryPrice).toFixed(2)}` : 'N/A';
+      drawMetaRow(marginX + 10, techY, 'Entry Price:', entryPriceStr, [15, 23, 42], true);
+
+      techY += 14.5;
+      const setupType = trade.frontsideSetup === true ? 'Frontside Setup' : trade.frontsideSetup === false ? 'Backside Setup' : 'Setup Not Logged';
+      const seqStr = trade.tradeSequence ? ` (#${trade.tradeSequence} Trade)` : '';
+      drawMetaRow(marginX + 10, techY, 'Setup & Sequence:', `${setupType}${seqStr}`, [14, 165, 233], true);
+
+      techY += 14.5;
+      drawMetaRow(marginX + 10, techY, '9 EMA Value:', trade.ema9Value ? `$${Number(trade.ema9Value).toFixed(2)}` : 'Not recorded', [15, 23, 42], true);
+
+      techY += 14.5;
+      drawMetaRow(marginX + 10, techY, 'VWAP Value:', trade.vwapValue ? `$${Number(trade.vwapValue).toFixed(2)}` : 'Not recorded', [15, 23, 42], true);
+
+      techY += 14.5;
+      drawMetaRow(marginX + 10, techY, 'Nearest Resistance:', trade.nearestResistance ? `$${Number(trade.nearestResistance).toFixed(2)}` : 'Not recorded', [15, 23, 42], true);
+
+      techY += 14.5;
+      drawMetaRow(marginX + 10, techY, 'Market Session:', sessionObj.label, [51, 65, 85], false);
+
+      // Right Box: Entry Discipline
+      const rightBoxX = marginX + subCardW + midGap;
+      drawCard(rightBoxX, currentY, subCardW, subCardH, [248, 250, 252], [226, 232, 240]);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('ENTRY DISCIPLINE & DEVIATION', rightBoxX + 10, currentY + 15);
+
+      let entryDisY = currentY + 30;
+      const isPredefined = trade.predefinedEntry;
+      const predefColor = isPredefined === true ? [16, 185, 129] : isPredefined === false ? [225, 29, 72] : [100, 116, 139];
+      const predefLabel = isPredefined === true ? 'Yes (Planned)' : isPredefined === false ? 'No (Impulsive / Mistake)' : 'Unspecified';
+      drawMetaRow(rightBoxX + 10, entryDisY, 'Predefined Entry:', predefLabel, predefColor, true);
+
+      entryDisY += 14.5;
+      const planPriceStr = trade.plannedEntryPrice ? `$${Number(trade.plannedEntryPrice).toFixed(2)}` : 'Same as execution';
+      drawMetaRow(rightBoxX + 10, entryDisY, 'Planned Price:', planPriceStr, [15, 23, 42], true);
+
+      entryDisY += 14.5;
+      drawMetaRow(rightBoxX + 10, entryDisY, 'Entry Type:', trade.entryType || 'Not specified', [14, 165, 233], true);
+
+      entryDisY += 14.5;
+      const devStr = trade.enteredAtPredefinedPrice === false
+        ? `Entered ${trade.entryDeviationDirection || 'Off-plan'}${trade.entryDeviationReason ? ' (' + trade.entryDeviationReason.substring(0, 32) + '...)' : ''}`
+        : 'Executed on-plan at planned price';
+      const devColor = trade.enteredAtPredefinedPrice === false ? [225, 29, 72] : [16, 185, 129];
+      drawMetaRow(rightBoxX + 10, entryDisY, 'Deviation:', devStr, devColor, false);
+
+      currentY += subCardH + 6;
+
+      // ----------------------------------------------------------------------
+      // 5. TWO-COLUMN DETAILS: RISK MANAGEMENT & PSYCHOLOGY
+      // ----------------------------------------------------------------------
+      const riskCardH = 92;
+
+      // Left Box: Risk Management
+      drawCard(marginX, currentY, subCardW, riskCardH, [248, 250, 252], [226, 232, 240]);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('RISK MANAGEMENT EXECUTION', marginX + 10, currentY + 15);
+
+      let riskY = currentY + 30;
+      const stopVal = trade.predefinedStopLoss;
+      const stopLabel = stopVal === true ? `Yes${trade.stopLossPrice ? ' ($' + Number(trade.stopLossPrice).toFixed(2) + ')' : ''}` : stopVal === false ? 'No Stop Defined (Critical Mistake)' : 'Unspecified';
+      const stopColor = stopVal === true ? [16, 185, 129] : stopVal === false ? [225, 29, 72] : [100, 116, 139];
+      drawMetaRow(marginX + 10, riskY, 'Predefined Stop Loss:', stopLabel, stopColor, true);
+
+      riskY += 14.5;
+      const avgDown = trade.averagedDown;
+      const avgLabel = avgDown === true ? `Yes (Critical Mistake)${trade.averagedDownReason ? ' - ' + trade.averagedDownReason.substring(0, 24) : ''}` : avgDown === false ? 'No (Disciplined)' : 'Unspecified';
+      const avgColor = avgDown === true ? [225, 29, 72] : [16, 185, 129];
+      drawMetaRow(marginX + 10, riskY, 'Averaged Down:', avgLabel, avgColor, true);
+
+      riskY += 14.5;
+      const flushVal = trade.flushOccurred;
+      const flushLabel = flushVal === true ? `Yes, Caught in Flush${trade.flushReason ? ' (' + trade.flushReason.substring(0, 26) + ')' : ''}` : flushVal === false ? 'No' : 'Unspecified';
+      const flushColor = flushVal === true ? [225, 29, 72] : [51, 65, 85];
+      drawMetaRow(marginX + 10, riskY, 'Caught in Flush?:', flushLabel, flushColor, false);
+
+      riskY += 14.5;
+      const rrrEst = trade.entryPrice && trade.stopLossPrice ? `Risk: $${Math.abs(Number(trade.entryPrice) - Number(trade.stopLossPrice)).toFixed(2)} / share` : 'N/A';
+      drawMetaRow(marginX + 10, riskY, 'Calculated Risk:', rrrEst, [51, 65, 85], false);
+
+      // Right Box: Psychology & Final Exit
+      drawCard(rightBoxX, currentY, subCardW, riskCardH, [248, 250, 252], [226, 232, 240]);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text('EXECUTION PSYCHOLOGY & TRAPS', rightBoxX + 10, currentY + 15);
+
+      let psychY = currentY + 30;
+      const frozeVal = trade.frozeOnLoss;
+      const frozeLabel = frozeVal === true ? `Yes (Froze During Loss)${trade.frozeReason ? ' - ' + trade.frozeReason.substring(0, 24) : ''}` : frozeVal === false ? 'No (Cut Decisively)' : 'Unspecified';
+      const frozeColor = frozeVal === true ? [225, 29, 72] : [16, 185, 129];
+      drawMetaRow(rightBoxX + 10, psychY, 'Froze on Loss?:', frozeLabel, frozeColor, true);
+
+      psychY += 14.5;
+      const exitTypeVal = trade.finalExitType;
+      const exitLabel = exitTypeVal === 'FEAR' ? 'Fear Exit (Premature / Panic)' : exitTypeVal === 'SETUP' ? 'Setup Exit (Target Met / Plan Followed)' : 'Unspecified';
+      const exitColor = exitTypeVal === 'FEAR' ? [225, 29, 72] : exitTypeVal === 'SETUP' ? [16, 185, 129] : [100, 116, 139];
+      drawMetaRow(rightBoxX + 10, psychY, 'Final Exit Type:', exitLabel, exitColor, true);
+
+      psychY += 14.5;
+      const fearReasonStr = trade.finalExitFearReason ? `"${trade.finalExitFearReason.substring(0, 48)}"` : 'None cited';
+      drawMetaRow(rightBoxX + 10, psychY, 'Exit Reason:', fearReasonStr, [100, 116, 139], false);
+
+      psychY += 14.5;
+      const seqWarn = Number(trade.tradeSequence) >= 3 ? 'High Fatigue Risk (3rd+ Trade)' : 'Normal Fatigue Zone';
+      const seqWarnColor = Number(trade.tradeSequence) >= 3 ? [217, 119, 6] : [51, 65, 85];
+      drawMetaRow(rightBoxX + 10, psychY, 'Overtrading State:', seqWarn, seqWarnColor, false);
+
+      currentY += riskCardH + 6;
+
+      // ----------------------------------------------------------------------
+      // 6. BEHAVIORAL MISTAKES AUDIT
+      // ----------------------------------------------------------------------
+      const mistakes = Array.isArray(trade.mistakes) ? trade.mistakes : [];
+      const isClean = trade.isClean || mistakes.length === 0;
+
+      if (isClean) {
+        const cleanH = 26;
+        drawCard(marginX, currentY, contentWidth, cleanH, [236, 253, 245], [16, 185, 129]);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(5, 150, 105);
+        doc.text('CLEAN EXECUTION - ZERO BEHAVIORAL MISTAKES COMMITTED', marginX + 12, currentY + 17);
+        currentY += cleanH + 6;
+      } else {
+        const flawBoxH = 38;
+        drawCard(marginX, currentY, contentWidth, flawBoxH, [255, 241, 242], [244, 63, 94]);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(225, 29, 72);
+        doc.text(`BEHAVIORAL MISTAKES DETECTED (${mistakes.length})`, marginX + 10, currentY + 14);
+
+        const mistakeTitles = mistakes.map((m) => `[${m.title}]`).join('   ');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(159, 18, 57);
+        const mistakeLines = doc.splitTextToSize(mistakeTitles, contentWidth - 20);
+        doc.text(mistakeLines[0] || '', marginX + 10, currentY + 27);
+        currentY += flawBoxH + 6;
+      }
+
+      // ----------------------------------------------------------------------
+      // 7. PAGE FOOTER (Y = 818 to 832 pt)
+      // ----------------------------------------------------------------------
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.75);
+      doc.line(marginX, 818, marginX + contentWidth, 818);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(148, 163, 184);
+      const nowStr = new Date().toLocaleString();
+      doc.text(`Trading Journal Performance Audit · Generated ${nowStr}`, marginX, 829);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Trade ${i + 1} of ${tradesToExport.length}  |  Page ${i + 1} of ${tradesToExport.length}`, marginX + contentWidth, 829, { align: 'right' });
+    }
+
+    const todayDateStr = new Date().toISOString().split('T')[0];
+    const fileName = `trading_journal_trades_${todayDateStr}_${tradesToExport.length}trades.pdf`;
+    doc.save(fileName);
+    showToast(`Successfully exported ${tradesToExport.length} trade${tradesToExport.length > 1 ? 's' : ''} to ${fileName}`, 'success');
+  } catch (err) {
+    console.error('Failed to export PDF:', err);
+    showToast('Failed to generate PDF. Check browser console.', 'error');
+  } finally {
+    isExportingPdf.value = false;
+  }
 };
 </script>
 
 <template>
-  <div class="journal-view" @dragover.prevent="isDragging = true" @dragleave.prevent="isDragging = false" @drop.prevent="onDrop">
-    <!-- Hidden file input for file imports -->
-    <input
-      ref="fileInput"
-      type="file"
-      id="journalFileInput"
-      accept=".json,application/json,.csv,text/csv,text/plain,.xlsx,.xls"
-      multiple
-      class="hidden-file-input"
-      @change="onFileChange"
-    />
+  <div class="journal-root">
+    <!-- Toast Notification -->
+    <transition name="fade">
+      <div v-if="toast.show" class="toast-popup" :class="toast.type">
+        <span>{{ toast.message }}</span>
+      </div>
+    </transition>
 
-    <!-- Floating Top-Right Action Buttons -->
-    <div class="floating-actions">
-      <button
-        class="floating-btn log-trade-floating-btn"
-        @click="openCreateOffcanvas"
-        title="Log a new trade manually"
-      >
-        <Plus :size="18" />
-        <span class="btn-text">Log Trade</span>
-      </button>
-      <button
-        v-if="hasData"
-        class="floating-btn clear-btn"
-        @click="confirmClearData"
-        title="Clear all stored journal records"
-      >
-        <RotateCcw :size="16" />
-      </button>
-      <label
-        for="journalFileInput"
-        class="floating-btn import-btn"
-        title="Import JSON, CSV, or Excel trades"
-      >
-        <UploadCloud :size="18" />
-      </label>
-    </div>
-
-    <!-- Floating status toast message -->
-    <div v-if="status.text" class="floating-status" :class="status.tone">
-      <span>{{ status.text }}</span>
-      <button class="status-close" @click="status.text = ''" title="Dismiss">
-        <X :size="12" />
-      </button>
-    </div>
-
-    <div class="wrap">
-      <!-- ================= Page Header Bar ================= -->
-      <header class="journal-header glass">
-        <div class="jh-left">
-          <div class="jh-title-row">
-            <BookOpen :size="24" class="jh-icon" />
-            <h1 class="jh-title">Trade Journaling</h1>
-            <span class="jh-badge">Manual Log &amp; Lifecycle</span>
+    <!-- Top Header & Navigation -->
+    <header class="journal-header glass-card">
+      <div class="header-left">
+        <div class="brand-badge">
+          <div class="brand-icon">
+            <BrainCircuit :size="20" />
           </div>
-          <p class="jh-desc">
-            Log setups, key levels, psychology, and screenshots. Follows exact round-trip position grouping and anomaly detection.
-          </p>
+          <div>
+            <h1 class="brand-title">TRADING JOURNAL</h1>
+            <p class="brand-sub">Behavioral Performance & Mistake Analysis System</p>
+          </div>
         </div>
 
-        <div class="jh-actions">
-          <button class="btn primary log-trade-hero-btn" @click="openCreateOffcanvas">
-            <Plus :size="16" />
-            <span>+ Log Trade</span>
+        <!-- Navigation Tabs -->
+        <nav class="nav-tabs">
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'analytics' }"
+            @click="activeTab = 'analytics'"
+          >
+            <BarChart2 :size="15" />
+            <span>Behavioral Analytics</span>
           </button>
-          <button class="btn ghost small" @click="copyFromTradingStats" title="Import past trades from Trading Stats into Journal">
-            <Copy :size="13" />
-            <span>Sync from Trade Stats</span>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'weekly' }"
+            @click="activeTab = 'weekly'"
+          >
+            <Calendar :size="15" />
+            <span>Weekly Review</span>
+            <span v-if="weeklyReview.currentStats.totalMistakes > 0" class="badge-pill warn">
+              {{ weeklyReview.currentStats.totalMistakes }}
+            </span>
           </button>
-          <label for="journalFileInput" class="btn ghost small" title="Import trades from file">
-            <FolderDown :size="13" />
-            <span>Import File</span>
-          </label>
-          <button v-if="hasData" class="btn ghost small" @click="confirmClearData" title="Clear journal">
-            <RotateCcw :size="13" />
-            <span>Clear</span>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'history' }"
+            @click="activeTab = 'history'"
+          >
+            <BookOpen :size="15" />
+            <span>Trade Log ({{ enrichedTrades.length }})</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="header-actions">
+        <!-- Date Scope Filter (for Analytics) -->
+        <div v-if="activeTab === 'analytics'" class="date-chips">
+          <button
+            class="chip-btn"
+            :class="{ active: selectedDateFilter === 'ALL' }"
+            @click="selectedDateFilter = 'ALL'"
+          >
+            All Time
+          </button>
+          <button
+            class="chip-btn"
+            :class="{ active: selectedDateFilter === 'THIS_MONTH' }"
+            @click="selectedDateFilter = 'THIS_MONTH'"
+          >
+            This Month
+          </button>
+          <button
+            class="chip-btn"
+            :class="{ active: selectedDateFilter === 'THIS_WEEK' }"
+            @click="selectedDateFilter = 'THIS_WEEK'"
+          >
+            This Week
+          </button>
+          <button
+            class="chip-btn"
+            :class="{ active: selectedDateFilter === 'LAST_WEEK' }"
+            @click="selectedDateFilter = 'LAST_WEEK'"
+          >
+            Last Week
           </button>
         </div>
-      </header>
 
-      <!-- ================= Empty State ================= -->
-      <section v-if="!hasData" class="empty glass">
-        <div class="empty-journal-card">
-          <div class="empty-icon-wrap">
-            <BookOpen :size="52" class="empty-icon" />
+        <!-- Main Add Trade Button -->
+        <button class="btn-primary-glow" @click="openAddModal">
+          <Plus :size="18" />
+          <span>Add Trade</span>
+        </button>
+
+        <!-- Utility Actions Menu -->
+        <div class="utility-actions">
+          <!-- JSON Storage Status Pill & Reload Action -->
+          <div
+            class="json-file-status-pill"
+            :title="`Persistent JSON File:\n${jsonFileInfo.filePath || 'data/journal_trades.json'}\n\nClick to reload fresh from disk file`"
+            @click="reloadFromJsonFile"
+          >
+            <span class="file-dot" :class="isBackendConnected ? 'connected' : 'disconnected'"></span>
+            <FileJson :size="14" class="file-icon" />
+            <span class="file-label">data/journal_trades.json</span>
+            <span class="file-count" v-if="jsonFileInfo.tradeCount !== undefined">({{ trades.length }})</span>
           </div>
-          <h2>Your Trade Journal is Empty</h2>
-          <p>
-            Start logging your scalps and day trades manually to track your setups, watched trigger levels, execution discipline, and screenshots.
-          </p>
-          <div class="empty-actions">
-            <button class="btn primary large-btn" @click="openCreateOffcanvas">
-              <Plus :size="18" />
-              <span>Log Your First Trade</span>
+
+          <button
+            class="btn-icon"
+            :class="{ 'icon-spin': isReloading }"
+            title="Reload fresh from data/journal_trades.json"
+            @click="reloadFromJsonFile"
+          >
+            <RefreshCw :size="16" />
+          </button>
+          <button class="btn-icon" title="Export Backup (JSON)" @click="exportDataJson">
+            <Download :size="16" />
+          </button>
+          <button class="btn-icon danger" title="Clear All Trades" @click="clearAllTrades">
+            <Trash2 :size="16" />
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN BODY CONTAINER -->
+    <main class="journal-main">
+      <!-- Empty state when 0 trades logged -->
+      <div v-if="enrichedTrades.length === 0" class="empty-journal-card glass-card">
+        <div class="ej-icon">
+          <BrainCircuit :size="48" />
+        </div>
+        <h2 class="ej-title">Your Trading Journal is Ready</h2>
+        <p class="ej-desc">
+          Analytics and behavioral mistake tracking count <strong>strictly from your manual entries</strong>.
+          Click below to record your first trade, define your planned price, and track your execution discipline.
+        </p>
+        <button class="btn-primary-glow mx-auto" @click="openAddModal">
+          <Plus :size="18" />
+          <span>Log First Manual Trade</span>
+        </button>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- TAB 1: BEHAVIORAL ANALYTICS & MISTAKES DEEP DIVE                  -->
+      <!-- ================================================================= -->
+      <section v-else-if="activeTab === 'analytics'" class="analytics-tab space-y-6">
+        <!-- 1. Overall Trading Statistics KPI Cards -->
+        <div class="kpi-grid">
+          <!-- Total Trades -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap blue">
+              <Layers :size="20" />
+            </div>
+            <div class="kpi-content">
+              <span class="kpi-label">TOTAL TRADES</span>
+              <div class="kpi-val">{{ overallStats.totalTrades }}</div>
+              <span class="kpi-sub text-muted">Manually recorded trades</span>
+            </div>
+          </div>
+
+          <!-- Total Mistakes -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap rose">
+              <AlertTriangle :size="20" />
+            </div>
+            <div class="kpi-content">
+              <span class="kpi-label">TOTAL MISTAKES</span>
+              <div class="kpi-val text-rose">{{ overallStats.totalMistakes }}</div>
+              <span class="kpi-sub text-muted">
+                Avg {{ overallStats.mistakesPerFlawedTrade }} per flawed trade
+              </span>
+            </div>
+          </div>
+
+          <!-- Discipline Score (Clean Trades %) -->
+          <div class="kpi-card glass-card highlight-border">
+            <div
+              class="kpi-icon-wrap"
+              :class="overallStats.cleanPercentage >= 70 ? 'green' : 'amber'"
+            >
+              <Award :size="20" />
+            </div>
+            <div class="kpi-content">
+              <span class="kpi-label">DISCIPLINE SCORE</span>
+              <div
+                class="kpi-val"
+                :class="overallStats.cleanPercentage >= 70 ? 'text-green' : 'text-amber'"
+              >
+                {{ overallStats.cleanPercentage }}%
+              </div>
+              <div class="progress-bar-wrap">
+                <div
+                  class="progress-bar"
+                  :style="{
+                    width: `${overallStats.cleanPercentage}%`,
+                    backgroundColor: overallStats.cleanPercentage >= 70 ? '#10b981' : '#f59e0b',
+                  }"
+                ></div>
+              </div>
+              <span class="kpi-sub text-muted">
+                {{ overallStats.cleanTrades }} of {{ overallStats.totalTrades }} trades 100% clean
+              </span>
+            </div>
+          </div>
+
+          <!-- Trades with Mistakes (%) -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap purple">
+              <ShieldAlert :size="20" />
+            </div>
+            <div class="kpi-content">
+              <span class="kpi-label">TRADES WITH MISTAKES</span>
+              <div class="kpi-val text-amber">{{ overallStats.tradesWithMistakes }}</div>
+              <span class="kpi-sub text-muted">
+                {{ overallStats.mistakePercentage }}% of all trades affected
+              </span>
+            </div>
+          </div>
+
+          <!-- Most Repeated Mistake -->
+          <div class="kpi-card glass-card span-2">
+            <div class="kpi-icon-wrap red">
+              <Flame :size="20" />
+            </div>
+            <div class="kpi-content">
+              <span class="kpi-label">#1 MOST REPEATED MISTAKE</span>
+              <div v-if="overallStats.mostFrequentMistake" class="most-frequent-box">
+                <span class="mf-title">{{ overallStats.mostFrequentMistake.title }}</span>
+                <div class="mf-tags">
+                  <span class="badge-pill red">
+                    {{ overallStats.mostFrequentMistake.count }} occurrences
+                  </span>
+                  <span class="badge-pill outline">
+                    {{ overallStats.mostFrequentMistake.percentage }}% of trades
+                  </span>
+                  <span class="badge-pill outline">
+                    {{ overallStats.mostFrequentMistake.category }}
+                  </span>
+                </div>
+              </div>
+              <div v-else class="text-muted italic">Zero mistakes committed! Flawless discipline 🎯</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Mistake Frequency Analysis (Dedicated Section) -->
+        <div class="section-card glass-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Mistake Frequency & Trend Analysis</h2>
+              <p class="section-sub">
+                Track how often each behavioral rule is broken and whether it is increasing or decreasing over time.
+              </p>
+            </div>
+            <span class="text-xs text-muted">
+              Trend compares recent 50% vs prior 50% trades
+            </span>
+          </div>
+
+          <div class="mistake-list">
+            <div
+              v-for="item in mistakeFrequencyList"
+              :key="item.id"
+              class="mistake-row"
+              :class="{ 'has-occurrences': item.count > 0 }"
+            >
+              <!-- Left: Identity & Category -->
+              <div class="m-left">
+                <div class="m-color-indicator" :style="{ backgroundColor: item.color }"></div>
+                <div class="m-info">
+                  <div class="m-title-row">
+                    <span class="m-title">{{ item.title }}</span>
+                    <span class="badge-cat" :style="{ color: item.color, borderColor: item.border, background: item.bg }">
+                      {{ item.category }}
+                    </span>
+                  </div>
+                  <p class="m-desc">{{ item.description }}</p>
+                </div>
+              </div>
+
+              <!-- Center: Visual Bar & Numbers -->
+              <div class="m-center">
+                <div class="m-bar-bg">
+                  <div
+                    class="m-bar-fill"
+                    :style="{
+                      width: `${item.percentage}%`,
+                      backgroundColor: item.color,
+                    }"
+                  ></div>
+                </div>
+                <div class="m-stats">
+                  <span class="m-count">{{ item.count }} times</span>
+                  <span class="m-pct">({{ item.percentage }}% of trades)</span>
+                </div>
+              </div>
+
+              <!-- Right: Trend Indicator -->
+              <div class="m-right">
+                <div
+                  v-if="item.trend === 'increasing'"
+                  class="trend-tag bad"
+                  title="Frequency is increasing in recent trades"
+                >
+                  <TrendingUp :size="14" />
+                  <span>Increasing (+{{ item.trendDelta }}%)</span>
+                </div>
+                <div
+                  v-else-if="item.trend === 'decreasing'"
+                  class="trend-tag good"
+                  title="Discipline is improving on this rule"
+                >
+                  <TrendingDown :size="14" />
+                  <span>Decreasing ({{ item.trendDelta }}%)</span>
+                </div>
+                <div v-else class="trend-tag neutral" title="Frequency remains unchanged">
+                  <Minus :size="14" />
+                  <span>Stable</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Behavioral Patterns Deep-Dive (3 Columns: Sequence, Frontside, Sessions) -->
+        <div class="patterns-grid">
+          <!-- Pattern A: Overtrading by Trade Sequence -->
+          <div class="pattern-card glass-card">
+            <div class="pattern-header">
+              <div class="p-icon yellow"><Clock :size="18" /></div>
+              <div>
+                <h3 class="pattern-title">Trade Sequence vs Mistake Rate</h3>
+                <p class="pattern-sub">Does executing multiple trades on the same stock trigger emotional mistakes?</p>
+              </div>
+            </div>
+            <div class="sequence-bars">
+              <div
+                v-for="seq in sequenceImpactStats"
+                :key="seq.label"
+                class="seq-item"
+              >
+                <div class="seq-top">
+                  <span class="seq-label">{{ seq.label }}</span>
+                  <span class="seq-rate" :class="seq.flawRate > 50 ? 'text-red' : 'text-muted'">
+                    {{ seq.flawRate }}% Mistake Rate ({{ seq.flawed }}/{{ seq.total }})
+                  </span>
+                </div>
+                <div class="seq-progress-wrap">
+                  <div
+                    class="seq-progress"
+                    :style="{
+                      width: `${seq.flawRate}%`,
+                      backgroundColor: seq.flawRate > 50 ? '#ef4444' : '#f59e0b',
+                    }"
+                  ></div>
+                </div>
+              </div>
+            </div>
+            <div class="pattern-note">
+              <span class="text-amber font-bold">Insight:</span> Scalpers frequently take revenge or overstay on the 3rd and 4th trades of a ticker after the primary setup has concluded.
+            </div>
+          </div>
+
+          <!-- Pattern B: Frontside Setup Edge -->
+          <div class="pattern-card glass-card">
+            <div class="pattern-header">
+              <div class="p-icon orange"><Target :size="18" /></div>
+              <div>
+                <h3 class="pattern-title">Frontside Setup Discipline</h3>
+                <p class="pattern-sub">Comparing execution quality on Frontside momentum vs Backside chop</p>
+              </div>
+            </div>
+            <div class="frontside-boxes">
+              <div class="fs-box green">
+                <div class="fs-head">Frontside Setups</div>
+                <div class="fs-val text-green">
+                  {{ frontsideImpactStats.frontside.rate }}% Flawed
+                </div>
+                <div class="fs-sub">
+                  {{ frontsideImpactStats.frontside.total }} recorded trades
+                </div>
+              </div>
+              <div class="fs-box red">
+                <div class="fs-head">Backside Setups</div>
+                <div class="fs-val text-red">
+                  {{ frontsideImpactStats.backside.rate }}% Flawed
+                </div>
+                <div class="fs-sub">
+                  {{ frontsideImpactStats.backside.total }} recorded trades
+                </div>
+              </div>
+            </div>
+            <div class="pattern-note">
+              <span class="text-orange font-bold">Insight:</span> Trading against the primary trend (Backside) dramatically increases the probability of averaging down, freezing, and chasing.
+            </div>
+          </div>
+
+          <!-- Pattern C: Trading Session Discipline -->
+          <div class="pattern-card glass-card">
+            <div class="pattern-header">
+              <div class="p-icon purple"><SunMedium :size="18" /></div>
+              <div>
+                <h3 class="pattern-title">Trading Session Breakdown</h3>
+                <p class="pattern-sub">Mistake frequency across market sessions</p>
+              </div>
+            </div>
+            <div class="sequence-bars">
+              <div
+                v-for="sess in sessionImpactStats"
+                :key="sess.id"
+                class="seq-item"
+              >
+                <div class="seq-top">
+                  <span class="seq-label" :style="{ color: sess.color }">{{ sess.label }}</span>
+                  <span class="seq-rate" :class="sess.flawRate > 50 ? 'text-red' : 'text-muted'">
+                    {{ sess.flawRate }}% ({{ sess.flawed }}/{{ sess.total }})
+                  </span>
+                </div>
+                <div class="seq-progress-wrap">
+                  <div
+                    class="seq-progress"
+                    :style="{
+                      width: `${sess.flawRate}%`,
+                      backgroundColor: sess.color,
+                    }"
+                  ></div>
+                </div>
+              </div>
+            </div>
+            <div class="pattern-note">
+              <span class="text-purple font-bold">Insight:</span> Mid-day chop often produces premature entries and overtrading compared to clean Morning Open trends.
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Mistake Categories Distribution -->
+        <div class="section-card glass-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Root Cause Categories</h2>
+              <p class="section-sub">Where does your trading friction originate?</p>
+            </div>
+          </div>
+          <div class="category-bars-grid">
+            <div
+              v-for="cat in categoryDistribution"
+              :key="cat.id"
+              class="cat-bar-card"
+            >
+              <div class="cat-bar-header">
+                <span class="cat-bar-name" :style="{ color: cat.color }">{{ cat.label }}</span>
+                <span class="cat-bar-num">{{ cat.count }} mistakes ({{ cat.percentage }}%)</span>
+              </div>
+              <div class="cat-bar-outer">
+                <div
+                  class="cat-bar-inner"
+                  :style="{ width: `${cat.percentage}%`, backgroundColor: cat.color }"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Logged Trades (Click any row to edit) -->
+        <div v-if="enrichedTrades.length > 0" class="section-card glass-card">
+          <div class="section-header flex items-center justify-between">
+            <div>
+              <h2 class="section-title">Recent Logged Trades (Click any row to edit)</h2>
+              <p class="section-sub">Quickly inspect or click any trade row to update its entry, levels, or rules.</p>
+            </div>
+            <button
+              type="button"
+              class="btn-secondary-sm"
+              @click="activeTab = 'history'"
+            >
+              View All {{ enrichedTrades.length }} Trades →
             </button>
-            <button class="btn ghost" @click="copyFromTradingStats">
-              <Copy :size="15" />
-              <span>Pull Records from Trade Stats</span>
-            </button>
+          </div>
+
+          <div class="trades-container space-y-3 mt-4">
+            <div
+              v-for="trade in recentTrades"
+              :key="'recent-' + trade.id"
+              class="trade-card glass-card clickable-row"
+              :class="{ 'has-flaws': trade.mistakesCount > 0, 'is-clean': trade.isClean }"
+              title="Click to edit / update this trade record"
+              @click="openEditModal(trade)"
+            >
+              <div class="tc-header">
+                <div class="tc-left">
+                  <span class="tc-symbol">{{ trade.symbol }}</span>
+                  <span
+                    class="badge-session-pill"
+                    :style="{ color: getSessionMeta(trade.session).color, borderColor: getSessionMeta(trade.session).color, background: getSessionMeta(trade.session).bg }"
+                  >
+                    {{ getSessionMeta(trade.session).label }}
+                  </span>
+                  <span class="badge-seq" :class="{ 'warn': trade.tradeSequence >= 3 }">
+                    #{{ trade.tradeSequence }} Trade
+                  </span>
+                  <span
+                    class="badge-fs"
+                    :class="trade.frontsideSetup === true ? 'front' : trade.frontsideSetup === false ? 'back' : 'none'"
+                  >
+                    {{ trade.frontsideSetup === true ? 'Frontside' : trade.frontsideSetup === false ? 'Backside' : 'Setup Unspecified' }}
+                  </span>
+                  <!-- Entry price next to frontside & market type boxes -->
+                  <span class="tc-entry-inline">
+                    Entry: <strong>${{ Number(trade.entryPrice).toFixed(2) }}</strong>
+                    <span v-if="trade.tradeDate || trade.tradeTime" class="tc-entry-time">
+                      at "{{ formatTradeDateTime(trade.tradeDate, trade.tradeTime) }}"
+                    </span>
+                  </span>
+                </div>
+
+                <div class="tc-center"></div>
+
+                <div class="tc-right">
+                  <button
+                    class="btn-row-action"
+                    title="Edit Trade"
+                    @click.stop="openEditModal(trade)"
+                  >
+                    <Edit3 :size="15" />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Mistakes Summary Badges Bar -->
+              <div class="tc-mistakes-bar">
+                <div v-if="trade.isClean" class="clean-badge">
+                  <CheckCircle2 :size="14" />
+                  <span>CLEAN EXECUTION — ZERO MISTAKES</span>
+                </div>
+                <div v-else class="mistake-pills-wrap">
+                  <span
+                    v-for="m in trade.mistakes"
+                    :key="m.id"
+                    class="mistake-pill"
+                    :style="{ backgroundColor: m.bg, borderColor: m.border, color: m.color }"
+                  >
+                    <AlertTriangle :size="12" />
+                    <span>{{ m.title }}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- ================= Active Journal Area ================= -->
-      <template v-else>
-        <!-- 1. Universal Filters Bar -->
-        <div class="universal-filter-bar glass">
-          <div class="uf-row">
-            <!-- Search -->
-            <div class="uf-item uf-search">
-              <Search :size="14" class="uf-icon" />
-              <input
-                type="text"
-                v-model="searchQuery"
-                placeholder="Search symbol, setup, level, comment, notes..."
-                class="uf-input"
-              />
-              <button v-if="searchQuery" class="uf-clear-input" @click="searchQuery = ''">
-                <X :size="12" />
-              </button>
+      <!-- ================================================================= -->
+      <!-- TAB 2: WEEKLY PERFORMANCE REVIEW                                  -->
+      <!-- ================================================================= -->
+      <section v-else-if="activeTab === 'weekly'" class="weekly-tab space-y-6">
+        <!-- Week Navigator -->
+        <div class="week-nav-card glass-card">
+          <div class="wn-left">
+            <button class="nav-arrow-btn" @click="prevWeek">
+              <ChevronLeft :size="18" />
+              <span>Prior Week</span>
+            </button>
+            <div class="wn-label-box">
+              <span class="wn-title">WEEKLY AUDIT:</span>
+              <span class="wn-range">{{ weeklyReview.weekLabel }}</span>
+            </div>
+            <button class="nav-arrow-btn" @click="nextWeek">
+              <span>Next Week</span>
+              <ChevronRight :size="18" />
+            </button>
+          </div>
+          <button class="btn-ghost" @click="resetToCurrentWeek">
+            <RefreshCw :size="14" />
+            <span>Current Week</span>
+          </button>
+        </div>
+
+        <!-- Weekly Comparison KPI Grid -->
+        <div class="kpi-grid">
+          <!-- Total Trades This Week -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap blue"><Layers :size="20" /></div>
+            <div class="kpi-content">
+              <span class="kpi-label">TRADES THIS WEEK</span>
+              <div class="kpi-val">{{ weeklyReview.currentStats.totalTrades }}</div>
+              <span class="kpi-sub" :class="weeklyReview.tradesDelta >= 0 ? 'text-muted' : 'text-muted'">
+                {{ weeklyReview.tradesDelta >= 0 ? `+${weeklyReview.tradesDelta}` : weeklyReview.tradesDelta }} vs prior week ({{ weeklyReview.priorStats.totalTrades }})
+              </span>
+            </div>
+          </div>
+
+          <!-- Total Mistakes This Week -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap rose"><AlertTriangle :size="20" /></div>
+            <div class="kpi-content">
+              <span class="kpi-label">MISTAKES THIS WEEK</span>
+              <div
+                class="kpi-val"
+                :class="weeklyReview.currentStats.totalMistakes > weeklyReview.priorStats.totalMistakes ? 'text-rose' : 'text-green'"
+              >
+                {{ weeklyReview.currentStats.totalMistakes }}
+              </div>
+              <span
+                class="kpi-sub"
+                :class="weeklyReview.mistakesDelta <= 0 ? 'text-green' : 'text-rose'"
+              >
+                {{ weeklyReview.mistakesDelta <= 0 ? `${weeklyReview.mistakesDelta}` : `+${weeklyReview.mistakesDelta}` }} vs prior week ({{ weeklyReview.priorStats.totalMistakes }})
+                {{ weeklyReview.mistakesDelta <= 0 ? '🟢 Improvement!' : '🔴 Worsened' }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Weekly Discipline Score -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap green"><Award :size="20" /></div>
+            <div class="kpi-content">
+              <span class="kpi-label">WEEKLY DISCIPLINE SCORE</span>
+              <div class="kpi-val text-green">
+                {{ weeklyReview.currentStats.cleanPercentage }}%
+              </div>
+              <span class="kpi-sub text-muted">
+                {{ weeklyReview.currentStats.cleanTrades }} of {{ weeklyReview.currentStats.totalTrades }} trades 100% clean
+              </span>
+            </div>
+          </div>
+
+          <!-- Most Repeated Mistake This Week -->
+          <div class="kpi-card glass-card">
+            <div class="kpi-icon-wrap red"><Flame :size="20" /></div>
+            <div class="kpi-content">
+              <span class="kpi-label">TOP MISTAKE THIS WEEK</span>
+              <div v-if="weeklyReview.currentStats.mostFrequentMistake" class="mf-title-sm">
+                {{ weeklyReview.currentStats.mostFrequentMistake.title }} ({{ weeklyReview.currentStats.mostFrequentMistake.count }})
+              </div>
+              <div v-else class="text-green text-sm italic">Zero mistakes this week! Perfect discipline 🎉</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Weekly Comparison Highlights (Improved vs Worsened) -->
+        <div class="weekly-delta-grid">
+          <!-- Column 1: Improved Mistakes -->
+          <div class="delta-col glass-card green-border">
+            <div class="delta-col-header">
+              <CheckCircle2 :size="18" class="text-green" />
+              <div>
+                <h3 class="delta-title text-green">What Improved This Week?</h3>
+                <p class="delta-sub">Mistakes reduced or eliminated compared to prior week</p>
+              </div>
             </div>
 
-            <!-- Side Filter -->
-            <div class="uf-item">
-              <span class="uf-label">Side:</span>
-              <select v-model="selectedSide" class="uf-select">
-                <option value="ALL">All Sides</option>
-                <option value="B">Buy (Long)</option>
-                <option value="S">Sell (Short)</option>
-              </select>
+            <div v-if="weeklyReview.improvedMistakes.length > 0" class="delta-list">
+              <div
+                v-for="m in weeklyReview.improvedMistakes"
+                :key="m.id"
+                class="delta-item good"
+              >
+                <div class="di-info">
+                  <span class="di-title">{{ m.title }}</span>
+                  <span class="di-desc">{{ m.category }}</span>
+                </div>
+                <div class="di-pill good">
+                  <span>{{ m.prevCount }} ➔ {{ m.currCount }}</span>
+                  <strong>({{ m.delta }})</strong>
+                </div>
+              </div>
+            </div>
+            <div v-else class="empty-delta text-muted">
+              No mistakes improved this week or no trades logged in prior week.
+            </div>
+          </div>
+
+          <!-- Column 2: Worsened Mistakes -->
+          <div class="delta-col glass-card red-border">
+            <div class="delta-col-header">
+              <XCircle :size="18" class="text-red" />
+              <div>
+                <h3 class="delta-title text-red">What Worsened / Repeated?</h3>
+                <p class="delta-sub">Mistakes that increased in frequency this week</p>
+              </div>
             </div>
 
-            <!-- Symbol Filter -->
-            <div class="uf-item">
-              <span class="uf-label">Symbol:</span>
-              <select v-model="selectedSymbol" class="uf-select">
-                <option value="ALL">All Symbols ({{ distinctSymbols.length }})</option>
-                <option v-for="s in distinctSymbols" :key="s.symbol" :value="s.symbol">
-                  {{ s.symbol }} ({{ s.count }})
-                </option>
-              </select>
+            <div v-if="weeklyReview.worsenedMistakes.length > 0" class="delta-list">
+              <div
+                v-for="m in weeklyReview.worsenedMistakes"
+                :key="m.id"
+                class="delta-item bad"
+              >
+                <div class="di-info">
+                  <span class="di-title">{{ m.title }}</span>
+                  <span class="di-desc">{{ m.category }}</span>
+                </div>
+                <div class="di-pill bad">
+                  <span>{{ m.prevCount }} ➔ {{ m.currCount }}</span>
+                  <strong>(+{{ m.delta }})</strong>
+                </div>
+              </div>
             </div>
-
-            <!-- Date Filter -->
-            <div class="uf-item">
-              <span class="uf-label">Date:</span>
-              <select v-model="selectedDate" class="uf-select">
-                <option value="ALL">All Dates ({{ distinctDates.length }})</option>
-                <option v-for="d in distinctDates" :key="d" :value="d">{{ d }}</option>
-              </select>
+            <div v-else class="empty-delta text-green">
+              Zero mistakes worsened this week! Excellent progress. 🛡️
             </div>
+          </div>
+        </div>
 
-            <!-- Session Filter -->
-            <div class="uf-item">
-              <span class="uf-label">Session:</span>
-              <select v-model="selectedSession" class="uf-select">
-                <option value="ALL">All Sessions</option>
-                <option value="REGULAR">Regular Market (9:30–16:00)</option>
-                <option value="PRE">Pre-market (&lt;9:30)</option>
-                <option value="POST">After-hours (&ge;16:00)</option>
-              </select>
+        <!-- Weekly Detailed Breakdown Table -->
+        <div class="section-card glass-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">All Rules Comparison (This Week vs Prior Week)</h2>
+              <p class="section-sub">Direct week-over-week audit of every trading mistake.</p>
             </div>
+          </div>
 
-            <!-- Reset Filter Button -->
+          <div class="table-responsive">
+            <table class="audit-table">
+              <thead>
+                <tr>
+                  <th>TRADING RULE & MISTAKE</th>
+                  <th>CATEGORY</th>
+                  <th>PRIOR WEEK</th>
+                  <th>THIS WEEK</th>
+                  <th>NET DELTA</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in weeklyReview.comparison" :key="item.id">
+                  <td class="font-bold">{{ item.title }}</td>
+                  <td>
+                    <span class="badge-cat-sm" :style="{ color: item.color }">{{ item.category }}</span>
+                  </td>
+                  <td>{{ item.prevCount }}</td>
+                  <td class="font-bold">{{ item.currCount }}</td>
+                  <td>
+                    <span
+                      class="delta-badge"
+                      :class="item.delta < 0 ? 'good' : item.delta > 0 ? 'bad' : 'neutral'"
+                    >
+                      {{ item.delta > 0 ? `+${item.delta}` : item.delta }}
+                    </span>
+                  </td>
+                  <td>
+                    <span v-if="item.status === 'improved'" class="status-pill good">Improved ↘</span>
+                    <span v-else-if="item.status === 'worsened'" class="status-pill bad">Worsened ↗</span>
+                    <span v-else class="status-pill neutral">No Change —</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================= -->
+      <!-- TAB 3: COMPLETE TRADE HISTORY & LOG                               -->
+      <!-- ================================================================= -->
+      <section v-else-if="activeTab === 'history'" class="history-tab space-y-6">
+        <!-- Filter and Search Bar -->
+        <div class="filter-bar glass-card">
+          <!-- Date Filter Group: [Today, Last Week, Last Month, Calendar Icon (Pick Range)] -->
+          <div class="date-filter-group">
             <button
-              v-if="hasActiveFilters"
-              class="btn ghost small uf-reset-btn"
-              @click="resetAllFilters"
-              title="Reset all filters"
+              type="button"
+              class="date-filter-btn"
+              :class="{ active: tradeLogDateFilter === 'TODAY' }"
+              @click="setDateFilter('TODAY')"
             >
-              <RotateCcw :size="12" />
-              <span>Reset</span>
+              Today
+            </button>
+            <button
+              type="button"
+              class="date-filter-btn"
+              :class="{ active: tradeLogDateFilter === 'LAST_WEEK' }"
+              @click="setDateFilter('LAST_WEEK')"
+            >
+              Last Week
+            </button>
+            <button
+              type="button"
+              class="date-filter-btn"
+              :class="{ active: tradeLogDateFilter === 'LAST_MONTH' }"
+              @click="setDateFilter('LAST_MONTH')"
+            >
+              Last Month
+            </button>
+            <button
+              type="button"
+              class="date-filter-btn"
+              :class="{ active: tradeLogDateFilter === 'ALL' }"
+              @click="setDateFilter('ALL')"
+            >
+              All
+            </button>
+
+            <!-- Calendar Icon to Pick Custom Range -->
+            <div class="calendar-picker-wrapper" ref="calendarPickerRef">
+              <button
+                type="button"
+                class="date-filter-btn calendar-btn"
+                :class="{ active: tradeLogDateFilter === 'CUSTOM' }"
+                @click="toggleCalendarPicker"
+                title="Pick Custom Date Range"
+              >
+                <Calendar :size="15" />
+                <span v-if="tradeLogDateFilter === 'CUSTOM' && customRangeLabel" class="custom-range-text">
+                  {{ customRangeLabel }}
+                </span>
+              </button>
+
+              <!-- Custom Range Popover -->
+              <div v-if="isCalendarPickerOpen" class="range-popover glass-card" @click.stop>
+                <div class="range-popover-header">
+                  <span class="range-title">Pick Date Range</span>
+                  <button type="button" class="btn-popover-close" @click="isCalendarPickerOpen = false">
+                    <X :size="14" />
+                  </button>
+                </div>
+                <div class="range-inputs-row">
+                  <div class="range-input-group">
+                    <label>From</label>
+                    <input
+                      type="date"
+                      v-model="customStartDate"
+                      class="date-input"
+                      @change="applyCustomRange"
+                    />
+                  </div>
+                  <div class="range-input-group">
+                    <label>To</label>
+                    <input
+                      type="date"
+                      v-model="customEndDate"
+                      class="date-input"
+                      @change="applyCustomRange"
+                    />
+                  </div>
+                </div>
+                <div class="range-actions">
+                  <button type="button" class="btn-apply-range" @click="applyCustomRange">
+                    Apply Range
+                  </button>
+                  <button type="button" class="btn-clear-range" @click="clearCustomRange">
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Divider -->
+          <div class="filter-divider"></div>
+
+          <!-- Search -->
+          <div class="search-box">
+            <Search :size="16" class="text-muted" />
+            <input
+              v-model="searchQuery"
+              placeholder="Search symbol, notes, reasons..."
+              class="search-input"
+            />
+            <button v-if="searchQuery" class="clear-search" @click="searchQuery = ''">
+              <X :size="14" />
             </button>
           </div>
 
-          <div class="uf-meta">
-            <span class="uf-counter">
-              Showing <b>{{ num(filteredTransactions.length) }}</b> of <b>{{ num(transactions.length) }}</b> transactions
-            </span>
-            <span v-if="hasActiveFilters" class="active-badge">Filters Active</span>
-            <span class="storage-badge" title="Preserved permanently in IndexedDB + LocalStorage">
-              <span class="storage-dot"></span> Journal Storage
-            </span>
+          <!-- Session Filter -->
+          <div class="filter-select-wrap">
+            <SunMedium :size="15" class="text-muted" />
+            <select v-model="selectedSessionFilter" class="filter-select">
+              <option value="ALL">All Sessions</option>
+              <option v-for="s in TRADING_SESSIONS" :key="s.id" :value="s.id">
+                {{ s.label }} ({{ s.hours }})
+              </option>
+            </select>
           </div>
-        </div>
 
-        <!-- 2. Main Navigation Tabs -->
-        <div class="main-tabs-nav">
-          <button
-            class="main-tab-btn"
-            :class="{ active: mainTab === 'tables' }"
-            @click="mainTab = 'tables'"
-          >
-            <Table :size="15" />
-            <span>Journal Table</span>
-            <span class="tab-badge">{{ num(filteredTransactions.length) }}</span>
-          </button>
-
-          <button
-            class="main-tab-btn"
-            :class="{ active: mainTab === 'stats' }"
-            @click="mainTab = 'stats'"
-          >
-            <BarChart3 :size="15" />
-            <span>Statistics &amp; Charts</span>
-          </button>
-        </div>
-
-        <!-- ================= Tab 1: Tables ================= -->
-        <div v-if="mainTab === 'tables'" class="main-tab-content">
-          <div class="toolbar glass">
-            <div class="tabs">
-              <button :class="{ on: activeTab === 'by-date' }" @click="activeTab = 'by-date'">
-                By Date <em>{{ byDateRows.length }}</em>
-              </button>
-              <button :class="{ on: activeTab === 'by-symbol' }" @click="activeTab = 'by-symbol'">
-                By Symbol <em>{{ bySymbolRows.length }}</em>
-              </button>
-            </div>
-
-            <div class="table-actions">
-              <button
-                v-if="activeTab === 'by-date'"
-                class="btn ghost small"
-                @click="toggleExpandAll"
-                :title="allExpanded ? 'Collapse all dates' : 'Expand all dates'"
+          <!-- Mistake Type Filter -->
+          <div class="filter-select-wrap">
+            <Filter :size="15" class="text-muted" />
+            <select v-model="selectedMistakeFilter" class="filter-select">
+              <option value="ALL">All Mistakes Filter</option>
+              <option
+                v-for="def in MISTAKE_DEFINITIONS"
+                :key="def.id"
+                :value="def.id"
               >
-                <Layers :size="13" />
-                <span>{{ allExpanded ? 'Collapse All' : 'Expand All' }}</span>
-              </button>
-
-              <button class="btn primary small" @click="openCreateOffcanvas">
-                <Plus :size="13" />
-                <span>+ Log Trade</span>
-              </button>
-
-              <button class="btn ghost small" @click="exportExcel" title="Export Excel">
-                <FileSpreadsheet :size="13" />
-                <span>Export Excel</span>
-              </button>
-
-              <button class="btn ghost small" @click="exportPdf" title="Export PDF">
-                <FileDown :size="13" />
-                <span>Export PDF</span>
-              </button>
-            </div>
+                {{ def.title }}
+              </option>
+            </select>
           </div>
 
-          <!-- By Date Table -->
-          <section v-if="activeTab === 'by-date'" class="panel glass">
-            <div class="tbl-wrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th
-                      v-for="col in visibleDateCols"
-                      :key="col.key"
-                      :class="col.align === 'l' ? 'l' : ''"
-                      :style="{ width: col.width + 'px', minWidth: col.width + 'px', maxWidth: col.width + 'px' }"
-                    >
-                      <span class="th-content">{{ col.label }}</span>
-                      <span
-                        class="col-resizer"
-                        @mousedown.stop.prevent="startColResize($event, col)"
-                        @dblclick.stop="resetSingleColWidth(col, defaultDateCols)"
-                        title="Drag to resize column"
-                      ></span>
-                    </th>
-                    <th class="spacer-col"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <template v-for="r in byDateRows" :key="r.date">
-                    <tr
-                      class="clickable-row"
-                      :class="{ open: expandedDates[r.date] }"
-                      @click="expandedDates[r.date] = !expandedDates[r.date]"
-                    >
-                      <td
-                        v-for="col in visibleDateCols"
-                        :key="col.key"
-                        :class="col.align === 'l' ? 'l' : ''"
-                        :style="{ width: col.width + 'px', minWidth: col.width + 'px', maxWidth: col.width + 'px' }"
-                      >
-                        <template v-if="col.key === 'trade_dt'">
-                          <span class="bold">
-                            <ChevronDown v-if="expandedDates[r.date]" :size="14" class="chev" />
-                            <ChevronRight v-else :size="14" class="chev" />
-                            {{ r.date }}
-                          </span>
-                        </template>
-                        <template v-else-if="col.key === 'records'">{{ num(r.count) }}</template>
-                        <template v-else-if="col.key === 'symbols'">{{ r.symbolsCount }}</template>
-                        <template v-else-if="col.key === 'qty'">{{ num(r.qty) }}</template>
-                        <template v-else-if="col.key === 'buyQty'">{{ num(r.buyQty) }}</template>
-                        <template v-else-if="col.key === 'sellQty'">{{ num(r.sellQty) }}</template>
-                        <template v-else-if="col.key === 'buyGross'">{{ fmtMoney(r.buyGross) }}</template>
-                        <template v-else-if="col.key === 'sellGross'">{{ fmtMoney(r.sellGross) }}</template>
-                        <template v-else-if="col.key === 'netDiff'">
-                          <span :class="cls(r.netDiff)"><b>{{ fmtSigned(r.netDiff) }}</b></span>
-                        </template>
-                        <template v-else-if="col.key === 'fees'">
-                          <span class="muted">{{ fmtMoney(r.fees, 4) }}</span>
-                        </template>
-                      </td>
-                      <td class="spacer-col"></td>
-                    </tr>
+          <!-- Discipline Filter Buttons -->
+          <div class="discipline-chips">
+            <button
+              class="disc-chip"
+              :class="{ active: selectedDisciplineFilter === 'ALL' }"
+              @click="selectedDisciplineFilter = 'ALL'"
+            >
+              All ({{ dateFilteredStats.total }})
+            </button>
+            <button
+              class="disc-chip clean"
+              :class="{ active: selectedDisciplineFilter === 'CLEAN' }"
+              @click="selectedDisciplineFilter = 'CLEAN'"
+            >
+              Clean ({{ dateFilteredStats.clean }})
+            </button>
+            <button
+              class="disc-chip flaws"
+              :class="{ active: selectedDisciplineFilter === 'MISTAKES' }"
+              @click="selectedDisciplineFilter = 'MISTAKES'"
+            >
+              Flawed ({{ dateFilteredStats.flaws }})
+            </button>
+          </div>
 
-                    <!-- Expanded rows: Grouped Trades with Borders & Anomaly Detection -->
-                    <tr v-if="expandedDates[r.date]" class="detail-row">
-                      <td :colspan="visibleDateCols.length + 1">
-                        <div class="inner-wrap">
-                          <div class="inner-header">
-                            <div class="inner-title-left">
-                              <span class="bold">Trades &amp; Executions for {{ r.date }}</span>
-                              <span class="muted">
-                                ({{ r.trades.length }} trade{{ r.trades.length === 1 ? '' : 's' }} · {{ r.transactions.length }} fills)
-                              </span>
-                            </div>
-                            <div class="inner-title-right">
-                              <button class="btn primary small" @click="openCreateOffcanvas">
-                                <Plus :size="12" /> Log Trade on this Day
-                              </button>
-                            </div>
-                          </div>
-
-                          <!-- Trades List -->
-                          <div class="trades-cards-stack">
-                            <div
-                              v-for="trade in r.trades"
-                              :key="trade.tradeId"
-                              class="trade-card-wrapper"
-                              :class="{ 'has-anomaly': trade.hasAnomaly }"
-                            >
-                              <!-- Trade Card Header -->
-                              <div class="trade-card-header">
-                                <div class="trade-header-meta">
-                                  <span class="trade-num-badge">Trade #{{ trade.tradeNumber }}</span>
-                                  <span class="trade-symbol-tag">{{ trade.symbol }}</span>
-                                  <span class="trade-dir-tag" :class="trade.direction.toLowerCase()">
-                                    {{ trade.direction }}
-                                  </span>
-                                  <span class="trade-status-tag" :class="trade.status.toLowerCase()">
-                                    {{ trade.status === 'CLOSED' ? 'Flat' : `${trade.openQty} sh open` }}
-                                  </span>
-                                  <span v-if="trade.hasAnomaly" class="anomaly-pill" title="Contains secondary buy / averaging down">
-                                    <AlertTriangle :size="12" />
-                                    <span>Avg / Extra Buy</span>
-                                  </span>
-                                </div>
-
-                                <div class="trade-header-tactics">
-                                  <!-- Setup Type Badge -->
-                                  <span
-                                    v-if="trade.setupType"
-                                    class="setup-pill"
-                                    :class="getSetupBadgeClass(trade.setupType)"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    title="Click to edit setup"
-                                  >
-                                    {{ trade.setupType }}
-                                  </span>
-                                  <span
-                                    v-else
-                                    class="setup-pill empty"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    title="Add setup type"
-                                  >
-                                    + Setup
-                                  </span>
-
-                                  <!-- Watched Level Badge -->
-                                  <span
-                                    v-if="trade.watchedValue"
-                                    class="watched-pill"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    :title="'Watched key level: ' + trade.watchedValue"
-                                  >
-                                    <Eye :size="12" />
-                                    <span>{{ trade.watchedValue }}</span>
-                                  </span>
-                                  <span
-                                    v-else
-                                    class="watched-pill empty"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    title="Add watched level"
-                                  >
-                                    <Eye :size="12" /> + Level
-                                  </span>
-
-                                  <!-- Comment Badge / Button -->
-                                  <button
-                                    v-if="trade.comment"
-                                    class="comment-pill-btn"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    :title="'Comment: ' + trade.comment"
-                                  >
-                                    <MessageSquare :size="12" />
-                                    <span class="comment-pill-text">{{ trade.comment }}</span>
-                                  </button>
-                                  <button
-                                    v-else
-                                    class="comment-pill-btn empty"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    title="Add comment"
-                                  >
-                                    <MessageSquare :size="12" />
-                                    <span>+ Comment</span>
-                                  </button>
-
-                                  <!-- Image Gallery Button -->
-                                  <button
-                                    v-if="trade.images && trade.images.length"
-                                    class="images-pill-btn"
-                                    @click.stop="openTradeImages(trade)"
-                                    title="View screenshots"
-                                  >
-                                    <Camera :size="12" />
-                                    <span>{{ trade.images.length }} screenshot{{ trade.images.length === 1 ? '' : 's' }}</span>
-                                  </button>
-                                  <button
-                                    v-else
-                                    class="images-pill-btn empty"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    title="Attach chart screenshot"
-                                  >
-                                    <Camera :size="12" />
-                                    <span>+ Image</span>
-                                  </button>
-                                </div>
-
-                                <div class="trade-header-actions">
-                                  <div class="trade-pnl-box">
-                                    <span class="pnl-val" :class="cls(trade.netPnL)">{{ fmtSigned(trade.netPnL) }}</span>
-                                    <span class="pnl-shares muted font-mono">{{ num(trade.totalEntryQty) }} sh</span>
-                                  </div>
-                                  <button
-                                    class="btn-edit-trade"
-                                    @click.stop="openEditOffcanvas(trade)"
-                                    title="Edit setup, comment, screenshots, or add exit fill"
-                                  >
-                                    <Edit3 :size="13" />
-                                    <span>Edit</span>
-                                  </button>
-                                </div>
-                              </div>
-
-                              <!-- Executions Table -->
-                              <div class="trade-table-wrap">
-                                <table class="tbl inner">
-                                  <thead>
-                                    <tr>
-                                      <th
-                                        v-for="col in visibleTradeCols"
-                                        :key="col.key"
-                                        :class="col.align"
-                                        :style="{ width: col.width + 'px', minWidth: col.width + 'px', maxWidth: col.width + 'px' }"
-                                      >
-                                        <span class="th-content">{{ col.label }}</span>
-                                        <span
-                                          class="col-resizer"
-                                          @mousedown.stop.prevent="startColResize($event, col)"
-                                          title="Drag to resize column"
-                                        ></span>
-                                      </th>
-                                      <th class="spacer-col"></th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    <tr
-                                      v-for="(t, idx) in trade.executions"
-                                      :key="t.id ?? idx"
-                                      :class="{ 'anomaly-row': t.isAnomaly }"
-                                    >
-                                      <td
-                                        v-for="col in visibleTradeCols"
-                                        :key="col.key"
-                                        :class="[
-                                          col.align === 'c' ? 'c' : col.align === 'r' ? 'r' : 'l',
-                                          col.mono ? 'font-mono' : '',
-                                          col.bold ? 'bold' : '',
-                                        ]"
-                                        :style="{ width: col.width + 'px', minWidth: col.width + 'px', maxWidth: col.width + 'px' }"
-                                        :title="String(t[col.key] ?? '')"
-                                      >
-                                        <!-- Setup Type -->
-                                        <template v-if="col.key === 'setupType'">
-                                          <span
-                                            v-if="trade.setupType"
-                                            class="setup-badge"
-                                            :class="getSetupBadgeClass(trade.setupType)"
-                                            @click.stop="openEditOffcanvas(trade)"
-                                          >
-                                            {{ trade.setupType }}
-                                          </span>
-                                          <span v-else class="muted null-val">—</span>
-                                        </template>
-
-                                        <!-- Watched Value -->
-                                        <template v-else-if="col.key === 'watchedValue'">
-                                          <span
-                                            v-if="trade.watchedValue"
-                                            class="watched-val-text font-mono"
-                                            @click.stop="openEditOffcanvas(trade)"
-                                          >
-                                            {{ trade.watchedValue }}
-                                          </span>
-                                          <span v-else class="muted null-val">—</span>
-                                        </template>
-
-                                        <!-- Comment -->
-                                        <template v-else-if="col.key === 'comment'">
-                                          <span
-                                            v-if="trade.comment"
-                                            class="comment-cell-text"
-                                            :title="trade.comment"
-                                            @click.stop="openEditOffcanvas(trade)"
-                                          >
-                                            <MessageSquare :size="11" class="comment-icon" />
-                                            <span class="comment-text-truncate">{{ trade.comment }}</span>
-                                          </span>
-                                          <span v-else class="muted null-val" @click.stop="openEditOffcanvas(trade)">—</span>
-                                        </template>
-
-                                        <!-- Images -->
-                                        <template v-else-if="col.key === 'images'">
-                                          <button
-                                            v-if="trade.images && trade.images.length"
-                                            class="col-img-btn"
-                                            @click.stop="openTradeImages(trade)"
-                                            title="View screenshots"
-                                          >
-                                            <Camera :size="12" /> {{ trade.images.length }}
-                                          </button>
-                                          <button
-                                            v-else
-                                            class="col-img-btn empty"
-                                            @click.stop="openEditOffcanvas(trade)"
-                                            title="Add screenshot"
-                                          >
-                                            <Camera :size="12" /> +
-                                          </button>
-                                        </template>
-
-                                        <!-- Actions -->
-                                        <template v-else-if="col.key === 'actions'">
-                                          <button
-                                            class="col-edit-btn"
-                                            @click.stop="openEditOffcanvas(trade)"
-                                            title="Edit trade setup & notes"
-                                          >
-                                            <Edit3 :size="13" />
-                                          </button>
-                                        </template>
-
-                                        <!-- Trade Type / Side -->
-                                        <template v-else-if="col.key === 'trd_type'">
-                                          <div class="side-cell">
-                                            <span v-if="t.trd_type" class="badge" :class="t.trd_type === 'B' ? 'buy' : 'sell'">
-                                              {{ t.trd_type }}
-                                            </span>
-                                            <span v-else class="null-val">null</span>
-                                            <span v-if="t.isAnomaly" class="anomaly-label-tag" title="Anomaly: secondary buy / avg down">
-                                              AVG
-                                            </span>
-                                          </div>
-                                        </template>
-
-                                        <!-- Quantity -->
-                                        <template v-else-if="col.key === 'qty'">
-                                          <span :class="t.qty != null ? '' : 'null-val'">
-                                            {{ t.qty != null ? num(t.qty) : 'null' }}
-                                          </span>
-                                        </template>
-
-                                        <!-- Price -->
-                                        <template v-else-if="col.key === 'price'">
-                                          <span :class="t.price != null ? '' : 'null-val'">
-                                            {{ t.price != null ? ('$' + Number(t.price).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')) : 'null' }}
-                                          </span>
-                                        </template>
-
-                                        <!-- Gross Amount -->
-                                        <template v-else-if="col.key === 'g_amt'">
-                                          <span :class="t.g_amt != null ? '' : 'null-val'">
-                                            {{ t.g_amt != null ? fmtMoney(t.g_amt) : 'null' }}
-                                          </span>
-                                        </template>
-
-                                        <!-- Net Amount -->
-                                        <template v-else-if="col.key === 'n_amt'">
-                                          <span :class="t.n_amt != null ? '' : 'null-val'">
-                                            {{ t.n_amt != null ? fmtMoney(t.n_amt, 4) : 'null' }}
-                                          </span>
-                                        </template>
-
-                                        <!-- Exec Time -->
-                                        <template v-else-if="col.key === 'exec_time'">
-                                          <span :class="t.exec_time != null ? '' : 'null-val'">
-                                            {{ t.exec_time != null ? fmtExecTime(t.exec_time) : 'null' }}
-                                          </span>
-                                        </template>
-
-                                        <!-- Default Column -->
-                                        <template v-else>
-                                          <span :class="t[col.key] != null ? (col.muted ? 'muted' : '') : 'null-val'">
-                                            {{ t[col.key] != null ? t[col.key] : 'null' }}
-                                          </span>
-                                        </template>
-                                      </td>
-                                      <td class="spacer-col"></td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <!-- By Symbol Table -->
-          <section v-else-if="activeTab === 'by-symbol'" class="panel glass">
-            <div class="tbl-wrap">
-              <table class="tbl">
-                <thead>
-                  <tr>
-                    <th
-                      v-for="col in symbolCols"
-                      :key="col.key"
-                      :class="col.align === 'l' ? 'l' : ''"
-                      :style="{ width: col.width + 'px', minWidth: col.width + 'px', maxWidth: col.width + 'px' }"
-                    >
-                      <span class="th-content">{{ col.label }}</span>
-                    </th>
-                    <th class="spacer-col"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="r in bySymbolRows" :key="r.symbol">
-                    <td
-                      v-for="col in symbolCols"
-                      :key="col.key"
-                      :class="[
-                        col.align === 'l' ? 'l' : '',
-                        col.bold ? 'bold' : '',
-                        col.key === 'openQty' ? (r.openQty !== 0 ? 'amber' : 'muted') : '',
-                        col.key === 'netDiff' ? cls(r.netDiff) : '',
-                      ]"
-                    >
-                      <template v-if="col.key === 'symbol'">{{ r.symbol }}</template>
-                      <template v-else-if="col.key === 'count'">{{ num(r.count) }}</template>
-                      <template v-else-if="col.key === 'datesCount'">{{ r.datesCount }}</template>
-                      <template v-else-if="col.key === 'qty'">{{ num(r.qty) }}</template>
-                      <template v-else-if="col.key === 'buyQty'">{{ num(r.buyQty) }}</template>
-                      <template v-else-if="col.key === 'sellQty'">{{ num(r.sellQty) }}</template>
-                      <template v-else-if="col.key === 'openQty'">{{ num(r.openQty) }}</template>
-                      <template v-else-if="col.key === 'buyGross'">{{ fmtMoney(r.buyGross) }}</template>
-                      <template v-else-if="col.key === 'sellGross'">{{ fmtMoney(r.sellGross) }}</template>
-                      <template v-else-if="col.key === 'netDiff'"><b>{{ fmtSigned(r.netDiff) }}</b></template>
-                      <template v-else-if="col.key === 'fees'">{{ fmtMoney(r.fees, 4) }}</template>
-                    </td>
-                    <td class="spacer-col"></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+          <!-- Sort Order Toggle Button -->
+          <button
+            type="button"
+            class="btn-sort-toggle"
+            @click="toggleSortOrder"
+            :title="sortOrder === 'desc' ? 'Sorting: Newest First (Click to sort Oldest First)' : 'Sorting: Oldest First (Click to sort Newest First)'"
+          >
+            <ArrowDown v-if="sortOrder === 'desc'" :size="14" />
+            <ArrowUp v-else :size="14" />
+            <span>{{ sortOrder === 'desc' ? 'Newest First' : 'Oldest First' }}</span>
+          </button>
         </div>
 
-        <!-- ================= Tab 2: Statistics & Charts ================= -->
-        <div v-else-if="mainTab === 'stats'" class="main-tab-content stats-view-container">
-          <section class="kpis">
-            <div class="kpi glass">
-              <span class="k-label">Volume &amp; Fills</span>
-              <strong class="k-value">{{ num(summary.totalQty) }} <small class="unit">sh</small></strong>
-              <span class="k-sub">{{ num(summary.count) }} fills ({{ summary.buyCount }}B / {{ summary.sellCount }}S)</span>
-            </div>
+        <!-- Selection & Export Action Bar -->
+        <div class="selection-toolbar glass-card">
+          <div class="st-left">
+            <label class="st-checkbox-label" title="Toggle select all filtered trades">
+              <input
+                type="checkbox"
+                :checked="isAllSelected"
+                class="trade-checkbox"
+                @change="toggleSelectAll"
+              />
+              <span class="st-select-text">
+                Select All Filtered ({{ displayedTrades.length }})
+              </span>
+            </label>
 
-            <div class="kpi glass">
-              <span class="k-label">Daily Pace</span>
-              <strong class="k-value">{{ summary.avgFillsPerDay }} <small class="unit">fills/day</small></strong>
-              <span class="k-sub">Peak: {{ summary.maxDayFills }} fills ({{ summary.peakDay }})</span>
-            </div>
+            <span v-if="selectedTradeIds.size > 0" class="st-count-pill">
+              {{ selectedTradeIds.size }} of {{ displayedTrades.length }} selected
+            </span>
 
-            <div class="kpi glass">
-              <span class="k-label">Avg Order Size</span>
-              <strong class="k-value">{{ num(summary.avgSize) }} <small class="unit">sh</small></strong>
-              <span class="k-sub">Range: {{ num(summary.minQty) }} – {{ num(summary.maxQty) }} sh</span>
-            </div>
+            <button
+              v-if="selectedTradeIds.size > 0"
+              type="button"
+              class="btn-clear-selection"
+              @click="deselectAllTrades"
+            >
+              Clear Selection
+            </button>
+          </div>
 
-            <div class="kpi glass">
-              <span class="k-label">Top Symbol Focus</span>
-              <strong class="k-value font-mono">
-                {{ summary.topSymbol ? summary.topSymbol.symbol : '—' }}
-                <small v-if="summary.topSymbol" class="unit">{{ summary.topSymbol.pct }}%</small>
-              </strong>
-              <span class="k-sub">{{ summary.symbolsCount }} unique ticker{{ summary.symbolsCount === 1 ? '' : 's' }}</span>
-            </div>
+          <div class="st-right">
+            <button
+              type="button"
+              class="btn-export-pdf"
+              :disabled="isExportingPdf || displayedTrades.length === 0"
+              :class="{ 'is-loading': isExportingPdf }"
+              @click="exportSelectedTradesPdf"
+              :title="selectedTradeIds.size > 0 ? `Export ${selectedTradeIds.size} selected trade(s) into single-page PDF` : `Export all ${displayedTrades.length} displayed trade(s) into single-page PDF`"
+            >
+              <RefreshCw v-if="isExportingPdf" :size="16" class="icon-spin" />
+              <FileDown v-else :size="16" />
+              <span>
+                {{ isExportingPdf ? 'Generating PDF...' : (selectedTradeIds.size > 0 ? `Export Selected to PDF (${selectedTradeIds.size})` : `Export All to PDF (${displayedTrades.length})`) }}
+              </span>
+            </button>
+          </div>
+        </div>
 
-            <div class="kpi glass">
-              <span class="k-label">Peak Time Window</span>
-              <strong class="k-value font-mono">{{ summary.peakHour ? summary.peakHour.label : '—' }}</strong>
-              <span class="k-sub">{{ summary.peakHour ? summary.peakHour.pct + '% of fills' : 'Based on exec_time' }}</span>
-            </div>
-
-            <div class="kpi glass hero">
-              <span class="k-label">Gross &amp; Fees</span>
-              <strong class="k-value">{{ fmtMoney(summary.totalFees, 2) }}</strong>
-              <span class="k-sub">{{ fmtMoney(summary.totalTurnover) }} gross turnover</span>
-            </div>
-          </section>
-
-          <!-- Interactive Charts -->
-          <section class="charts-grid">
-            <div class="chart-card glass">
-              <div class="chart-header">
-                <div class="chart-title">
-                  <TrendingUp :size="16" class="chart-icon" />
-                  <strong>Daily Journal Volume &amp; Shares</strong>
+        <!-- Trades List / Cards -->
+        <div v-if="displayedTrades.length > 0" class="trades-container space-y-4">
+          <div
+            v-for="trade in displayedTrades"
+            :key="trade.id"
+            class="trade-card glass-card clickable-row"
+            :class="{ 'has-flaws': trade.mistakesCount > 0, 'is-clean': trade.isClean, 'is-selected': selectedTradeIds.has(trade.id) }"
+            title="Click to edit / update this trade record"
+            @click="openEditModal(trade)"
+          >
+            <!-- Card Header -->
+            <div class="tc-header">
+              <div class="tc-left">
+                <!-- Trade Selection Checkbox -->
+                <div
+                  class="tc-select-wrap"
+                  title="Select trade for PDF export"
+                  @click.stop="toggleSelectTrade(trade.id)"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="selectedTradeIds.has(trade.id)"
+                    class="trade-checkbox"
+                    @click.stop="toggleSelectTrade(trade.id)"
+                  />
                 </div>
+                <span class="tc-symbol">{{ trade.symbol }}</span>
+                <span
+                  class="badge-session-pill"
+                  :style="{ color: getSessionMeta(trade.session).color, borderColor: getSessionMeta(trade.session).color, background: getSessionMeta(trade.session).bg }"
+                >
+                  {{ getSessionMeta(trade.session).label }}
+                </span>
+                <span class="badge-seq" :class="{ 'warn': trade.tradeSequence >= 3 }">
+                  #{{ trade.tradeSequence }} Trade
+                </span>
+                <span
+                  class="badge-fs"
+                  :class="trade.frontsideSetup === true ? 'front' : trade.frontsideSetup === false ? 'back' : 'none'"
+                >
+                  {{ trade.frontsideSetup === true ? 'Frontside' : trade.frontsideSetup === false ? 'Backside' : 'Setup Unspecified' }}
+                </span>
+                <!-- Entry price next to frontside & market type boxes -->
+                <span class="tc-entry-inline">
+                  Entry: <strong>${{ Number(trade.entryPrice).toFixed(2) }}</strong>
+                  <span v-if="trade.tradeDate || trade.tradeTime" class="tc-entry-time">
+                    at "{{ formatTradeDateTime(trade.tradeDate, trade.tradeTime) }}"
+                  </span>
+                </span>
               </div>
-              <div class="chart-body">
-                <div v-if="!dailyChartData.length" class="chart-empty">No daily data for selected filters</div>
-                <div v-else class="bar-chart-container">
-                  <div v-for="d in dailyChartData" :key="d.date" class="bar-group">
-                    <div class="bars-pair">
-                      <div
-                        class="chart-bar buy-bar"
-                        :style="{ height: Math.max(4, Math.round((d.buyQty / maxDailyQty) * 150)) + 'px' }"
-                        :title="d.date + ': Buy ' + num(d.buyQty) + ' sh'"
-                      ></div>
-                      <div
-                        class="chart-bar sell-bar"
-                        :style="{ height: Math.max(4, Math.round((d.sellQty / maxDailyQty) * 150)) + 'px' }"
-                        :title="d.date + ': Sell ' + num(d.sellQty) + ' sh'"
-                      ></div>
+
+              <!-- Price & PnL details -->
+              <div class="tc-center">
+                <span v-if="trade.exitPrice" class="tc-exit">
+                  Exit: <strong>${{ Number(trade.exitPrice).toFixed(2) }}</strong>
+                </span>
+                <span
+                  v-if="trade.calculatedPnl !== undefined && trade.calculatedPnl !== null"
+                  class="tc-pnl"
+                  :class="trade.calculatedPnl >= 0 ? 'text-green' : 'text-rose'"
+                >
+                  {{ trade.calculatedPnl >= 0 ? `+$${trade.calculatedPnl}` : `-$${Math.abs(trade.calculatedPnl)}` }}
+                </span>
+                <span v-else-if="trade.isStillOpen" class="badge-open">OPEN</span>
+              </div>
+
+              <!-- Actions (Date & Time removed from right side) -->
+              <div class="tc-right">
+                <button
+                  class="btn-row-action"
+                  title="Expand / Collapse Details"
+                  @click.stop="toggleExpandTrade(trade.id)"
+                >
+                  <ChevronDown v-if="!expandedTradeIds.has(trade.id)" :size="16" />
+                  <ChevronUp v-else :size="16" />
+                </button>
+                <button
+                  class="btn-row-action"
+                  title="Edit Trade"
+                  @click.stop="openEditModal(trade)"
+                >
+                  <Edit3 :size="15" />
+                </button>
+                <button
+                  class="btn-row-action danger"
+                  title="Delete Trade"
+                  @click.stop="deleteTrade(trade.id)"
+                >
+                  <Trash2 :size="15" />
+                </button>
+              </div>
+            </div>
+
+            <!-- Mistakes Summary Badges Bar -->
+            <div class="tc-mistakes-bar">
+              <div v-if="trade.isClean" class="clean-badge">
+                <CheckCircle2 :size="14" />
+                <span>CLEAN EXECUTION — ZERO MISTAKES</span>
+              </div>
+              <div v-else class="mistake-pills-wrap">
+                <span
+                  v-for="m in trade.mistakes"
+                  :key="m.id"
+                  class="mistake-pill"
+                  :style="{ backgroundColor: m.bg, borderColor: m.border, color: m.color }"
+                >
+                  <AlertTriangle :size="12" />
+                  <span>{{ m.title }}</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Expanded Details View -->
+            <div v-if="expandedTradeIds.has(trade.id)" class="tc-expanded-body">
+              <div class="tc-expanded-top-bar flex items-center justify-between pb-2 mb-3">
+                <span class="text-xs text-muted font-bold tracking-wider">TRADE DETAILS &amp; AUDIT BREAKDOWN</span>
+                <button
+                  type="button"
+                  class="btn-edit-inside-expanded"
+                  @click.stop="openEditModal(trade)"
+                  title="Open offcanvas to edit this trade record"
+                >
+                  <Edit3 :size="13" />
+                  <span>Edit This Trade</span>
+                </button>
+              </div>
+              <div class="detail-grid">
+                <!-- Col 1: Technical Levels -->
+                <div class="detail-box">
+                  <h4 class="detail-box-title">Technical Levels at Entry</h4>
+                  <div class="detail-rows">
+                    <div class="dr-item">
+                      <span class="dr-lbl">Session:</span>
+                      <span class="dr-val" :style="{ color: getSessionMeta(trade.session).color }">
+                        {{ getSessionMeta(trade.session).label }} ({{ getSessionMeta(trade.session).hours }})
+                      </span>
                     </div>
-                    <span class="bar-date-label">{{ d.date.slice(5) }}</span>
+                    <div v-if="trade.tradeTime" class="dr-item">
+                      <span class="dr-lbl">EST Time (New York):</span>
+                      <span class="dr-val text-sky font-bold">
+                        🇺🇸 {{ convertLocalToEst(trade.tradeDate, trade.tradeTime).estDisplay }}
+                      </span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">9 EMA Value:</span>
+                      <span class="dr-val">{{ trade.ema9Value ? `$${Number(trade.ema9Value).toFixed(2)}` : 'Not recorded' }}</span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">VWAP Value:</span>
+                      <span class="dr-val">{{ trade.vwapValue ? `$${Number(trade.vwapValue).toFixed(2)}` : 'Not recorded' }}</span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">Nearest Resistance:</span>
+                      <span class="dr-val">{{ trade.nearestResistance ? `$${Number(trade.nearestResistance).toFixed(2)}` : 'Not recorded' }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Col 2: Entry Discipline & Deviation -->
+                <div class="detail-box">
+                  <h4 class="detail-box-title">Entry Discipline</h4>
+                  <div class="detail-rows">
+                    <div class="dr-item">
+                      <span class="dr-lbl">Predefined Entry?</span>
+                      <span class="dr-val" :class="trade.predefinedEntry === false ? 'text-red font-bold' : 'text-green'">
+                        {{ trade.predefinedEntry === true ? 'Yes' : trade.predefinedEntry === false ? 'No (Mistake)' : 'Unspecified' }}
+                      </span>
+                    </div>
+                    <div v-if="trade.predefinedEntry" class="dr-item">
+                      <span class="dr-lbl">Planned Price:</span>
+                      <span class="dr-val">${{ Number(trade.plannedEntryPrice || trade.entryPrice).toFixed(2) }}</span>
+                    </div>
+                    <div v-if="trade.entryType" class="dr-item full">
+                      <span class="dr-lbl">Entry Type:</span>
+                      <span class="dr-val text-sky font-semibold">{{ trade.entryType }}</span>
+                    </div>
+                    <div v-if="trade.enteredAtPredefinedPrice === false" class="dr-item">
+                      <span class="dr-lbl">Deviation:</span>
+                      <span class="dr-val text-rose font-bold">
+                        Entered {{ trade.entryDeviationDirection || 'off-plan' }}
+                      </span>
+                    </div>
+                    <div v-if="trade.entryDeviationReason" class="dr-item full">
+                      <span class="dr-lbl">Reason:</span>
+                      <span class="dr-val italic text-amber">"{{ trade.entryDeviationReason }}"</span>
+                    </div>
+                    <div v-if="trade.enteredAboveAction" class="dr-item full">
+                      <span class="dr-lbl">Size Management:</span>
+                      <span class="dr-val" :class="trade.enteredAboveAction === 'HELD_FULL' ? 'text-red font-bold' : 'text-green'">
+                        {{ trade.enteredAboveAction === 'HELD_FULL' ? 'Held Full Size (Mistake)' : trade.enteredAboveAction === 'SOLD_HALF' ? 'Sold Half (Mitigated)' : 'Closed Entire' }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Col 3: Risk Management & Psychology -->
+                <div class="detail-box">
+                  <h4 class="detail-box-title">Risk Management & Psychology</h4>
+                  <div class="detail-rows">
+                    <div class="dr-item">
+                      <span class="dr-lbl">Predefined Stop Loss?</span>
+                      <span class="dr-val" :class="trade.predefinedStopLoss === false ? 'text-red font-bold' : 'text-green'">
+                        {{ trade.predefinedStopLoss === true ? 'Yes' : trade.predefinedStopLoss === false ? 'No (Mistake)' : 'Unspecified' }}
+                      </span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">Averaged Down?</span>
+                      <span class="dr-val" :class="trade.averagedDown === true ? 'text-red font-bold' : 'text-green'">
+                        {{ trade.averagedDown === true ? 'Yes (Critical Mistake)' : trade.averagedDown === false ? 'No' : 'Unspecified' }}
+                      </span>
+                    </div>
+                    <div v-if="trade.averagedDownReason" class="dr-item full">
+                      <span class="dr-lbl">Avg Down Reason:</span>
+                      <span class="dr-val italic text-red">"{{ trade.averagedDownReason }}"</span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">Froze During Loss?</span>
+                      <span class="dr-val" :class="trade.frozeOnLoss === true ? 'text-red font-bold' : 'text-green'">
+                        {{ trade.frozeOnLoss === true ? 'Yes (Psychology Mistake)' : trade.frozeOnLoss === false ? 'No' : 'Unspecified' }}
+                      </span>
+                    </div>
+                    <div v-if="trade.frozeReason" class="dr-item full">
+                      <span class="dr-lbl">Freezing Reason:</span>
+                      <span class="dr-val italic text-purple">"{{ trade.frozeReason }}"</span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">Final Exit:</span>
+                      <span class="dr-val" :class="trade.finalExitType === 'FEAR' ? 'text-red font-bold' : trade.finalExitType === 'SETUP' ? 'text-green font-bold' : 'text-muted'">
+                        {{ trade.finalExitType === 'FEAR' ? 'Fear Exit 🔴' : trade.finalExitType === 'SETUP' ? 'Setup Exit 🟢' : 'Unspecified' }}
+                      </span>
+                    </div>
+                    <div v-if="trade.finalExitFearReason" class="dr-item full">
+                      <span class="dr-lbl">Fear Exit Reason:</span>
+                      <span class="dr-val italic text-purple">"{{ trade.finalExitFearReason }}"</span>
+                    </div>
+                    <div class="dr-item">
+                      <span class="dr-lbl">Caught in Flush?:</span>
+                      <span class="dr-val" :class="trade.flushOccurred === true ? 'text-red font-bold' : trade.flushOccurred === false ? 'text-green font-bold' : 'text-muted'">
+                        {{ trade.flushOccurred === true ? 'Yes, Caught in Flush 🔴' : trade.flushOccurred === false ? 'No 🟢' : 'Unspecified' }}
+                      </span>
+                    </div>
+                    <div v-if="trade.flushReason" class="dr-item full">
+                      <span class="dr-lbl">Flush / Error Reason:</span>
+                      <span class="dr-val italic text-red">"{{ trade.flushReason }}"</span>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <div class="chart-card glass">
-              <div class="chart-header">
-                <div class="chart-title">
-                  <Activity :size="16" class="chart-icon" />
-                  <strong>Symbol Breakdown</strong>
+              <!-- Notes / Reflection (RTL Arabic Preview) -->
+              <div v-if="trade.notes" class="tc-notes-box" dir="rtl">
+                <div class="flex items-center justify-between mb-1.5">
+                  <span class="text-xs text-muted font-bold">التفكير الداخلى:</span>
+                  <span class="badge-rtl-pill">RTL Arabic 🇸🇦</span>
                 </div>
+                <div class="html-rendered-notes text-sm text-gray-200" dir="rtl" v-html="formatBidiNumbers(trade.notes)"></div>
               </div>
-              <div class="chart-body">
-                <div class="symbol-bars-list">
-                  <div v-for="s in bySymbolRows.slice(0, 6)" :key="s.symbol" class="sym-row">
-                    <div class="sym-meta">
-                      <b class="sym-ticker font-mono">{{ s.symbol }}</b>
-                      <span class="sym-stats muted">{{ num(s.qty) }} sh · {{ s.count }} fills</span>
-                      <span class="sym-diff" :class="cls(s.netDiff)">{{ fmtSigned(s.netDiff) }}</span>
-                    </div>
-                    <div class="sym-track">
-                      <div
-                        class="sym-fill"
-                        :style="{ width: Math.round((s.qty / (summary.totalQty || 1)) * 100) + '%' }"
-                      ></div>
+
+              <!-- Attached Screenshots -->
+              <div v-if="trade.screenshots && trade.screenshots.length > 0" class="tc-screenshots-box">
+                <span class="text-xs text-muted font-bold block mb-2">CHART SCREENSHOTS:</span>
+                <div class="screenshot-thumbnails">
+                  <div
+                    v-for="(img, idx) in trade.screenshots"
+                    :key="idx"
+                    class="thumb-wrap"
+                    @click="activeLightboxImage = img"
+                  >
+                    <img :src="img" alt="Trade Chart" class="thumb-img" />
+                    <div class="thumb-overlay">
+                      <Eye :size="16" />
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-          </section>
-        </div>
-      </template>
-    </div>
-
-    <!-- Offcanvas Backdrop Overlay -->
-    <div v-if="isOffcanvasOpen" class="offcanvas-backdrop" @click="closeOffcanvas"></div>
-
-    <!-- Offcanvas Drawer (Handles both Logging New Trades & Editing Existing Trades) -->
-    <aside class="offcanvas-drawer" :class="{ open: isOffcanvasOpen }">
-      <div class="offcanvas-content">
-        <!-- Drawer Header -->
-        <div class="offcanvas-header">
-          <div class="offcanvas-title-group">
-            <div class="offcanvas-badge-row">
-              <span class="offcanvas-tag">
-                {{ offcanvasMode === 'create' ? '+ Log New Trade' : `Trade #${editingTrade?.tradeNumber}` }}
-              </span>
-              <span v-if="offcanvasMode === 'edit'" class="offcanvas-symbol font-mono">
-                {{ editingTrade?.symbol }}
-              </span>
-              <span
-                class="offcanvas-dir-badge"
-                :class="(offcanvasMode === 'create' ? createForm.direction : editingTrade?.direction || 'LONG').toLowerCase()"
-              >
-                {{ offcanvasMode === 'create' ? createForm.direction : editingTrade?.direction }}
-              </span>
-            </div>
-            <div v-if="offcanvasMode === 'edit' && editingTrade" class="offcanvas-sub">
-              <span>{{ editingTrade.date }}</span>
-              <span>·</span>
-              <span>{{ editingTrade.entryTime }} → {{ editingTrade.exitTime || 'Open' }}</span>
-              <span>·</span>
-              <span :class="cls(editingTrade.netPnL)">{{ fmtSigned(editingTrade.netPnL) }}</span>
-            </div>
-            <div v-else class="offcanvas-sub">
-              <span>Record your setup, entries, exits, psychology, and screenshots</span>
-            </div>
           </div>
-          <button class="offcanvas-close-btn" @click="closeOffcanvas" title="Close">
-            <X :size="18" />
-          </button>
         </div>
 
-        <!-- Drawer Body -->
-        <div class="offcanvas-body">
-          <!-- CREATE MODE: Trade Context -->
-          <div v-if="offcanvasMode === 'create'" class="form-section-card">
-            <h4 class="section-title">Trade Basics</h4>
-            <div class="form-row-grid">
+        <!-- Empty State -->
+        <div v-else class="empty-state glass-card text-center py-12">
+          <BookOpen :size="48" class="mx-auto text-muted mb-4" />
+          <h3 class="text-lg font-bold text-gray-200">No trades match your filter criteria</h3>
+          <p class="text-sm text-muted mt-1 mb-4">
+            {{ tradeLogDateFilter === 'TODAY' ? 'No trades recorded for today yet.' : 'Try resetting your filters or click "+ Add Trade" to log a new position.' }}
+          </p>
+          <div class="empty-actions flex gap-3 justify-center">
+            <button
+              v-if="tradeLogDateFilter !== 'ALL' && enrichedTrades.length > 0"
+              type="button"
+              class="btn-secondary-sm"
+              @click="setDateFilter('ALL')"
+            >
+              View All {{ enrichedTrades.length }} Trades
+            </button>
+            <button type="button" class="btn-primary-glow" @click="openAddModal">
+              <Plus :size="16" />
+              <span>Add Trade</span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ================================================================= -->
+    <!-- OFFCANVAS DRAWER: ADD / EDIT TRADE FORM (DYNAMIC LOGIC)           -->
+    <!-- ================================================================= -->
+    <transition name="slide-drawer">
+      <div v-if="isOffcanvasOpen" class="offcanvas-backdrop" @click.self="closeOffcanvas">
+        <aside class="offcanvas-drawer glass-card">
+          <!-- Drawer Header -->
+          <div class="drawer-header">
+            <div class="dh-title-box">
+              <h2 class="drawer-title">
+                {{ editingTradeId ? 'Edit Trade Record' : 'Add New Trade' }}
+              </h2>
+              <p class="drawer-sub">
+                Record your manual trade data and evaluate your behavioral discipline.
+              </p>
+            </div>
+            <button class="btn-close" @click="closeOffcanvas">
+              <X :size="20" />
+            </button>
+          </div>
+
+          <!-- Drawer Form Body -->
+          <form class="drawer-body" @submit.prevent="saveTrade">
+            <!-- SECTION A: TRADE INFORMATION -->
+            <fieldset class="form-section">
+              <legend class="section-legend">
+                <span class="legend-num">A</span> Trade Information
+              </legend>
+
+              <!-- Stock Symbol -->
               <div class="form-group">
-                <label class="form-label">Symbol / Ticker *</label>
+                <label class="form-label required">Stock Symbol / Ticker</label>
                 <input
-                  type="text"
-                  v-model="createForm.symbol"
-                  class="form-input font-mono uppercase"
+                  v-model="form.symbol"
                   placeholder="e.g. TSLA, NVDA"
-                  autofocus
+                  class="form-input uppercase font-bold"
+                  required
                 />
               </div>
 
+              <!-- Trading Session Picker (shown only when editing) -->
+              <div v-if="editingTradeId" class="form-group">
+                <div class="flex-between mb-1">
+                  <label class="form-label required">
+                    Trading Session <span class="text-xs text-muted font-normal">(EST / New York Time)</span>
+                  </label>
+                  <span class="text-xs font-bold" :style="{ color: getSessionMeta(form.session).color }">
+                    Active: {{ getSessionMeta(form.session).label }} ({{ getSessionMeta(form.session).hours }})
+                  </span>
+                </div>
+                <div class="session-chips-grid">
+                  <button
+                    v-for="s in TRADING_SESSIONS"
+                    :key="s.id"
+                    type="button"
+                    class="session-chip-btn"
+                    :class="{ active: form.session === s.id }"
+                    :style="form.session === s.id ? { borderColor: s.color, color: s.color, background: s.bg } : {}"
+                    @click="form.session = s.id"
+                  >
+                    <span class="sc-name">{{ s.label }}</span>
+                    <span class="sc-time">{{ s.hours }}</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Entry Price -->
               <div class="form-group">
-                <label class="form-label">Date *</label>
-                <input type="date" v-model="createForm.date" class="form-input" />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">Direction</label>
-              <div class="dir-toggle-group">
-                <button
-                  type="button"
-                  class="dir-toggle-btn"
-                  :class="{ active: createForm.direction === 'LONG' }"
-                  @click="createForm.direction = 'LONG'"
-                >
-                  LONG (Buy to Open)
-                </button>
-                <button
-                  type="button"
-                  class="dir-toggle-btn short"
-                  :class="{ active: createForm.direction === 'SHORT' }"
-                  @click="createForm.direction = 'SHORT'"
-                >
-                  SHORT (Sell to Open)
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Section: Strategy Setup & Catalyst -->
-          <div class="form-group">
-            <label class="form-label">
-              <span>Setup / Strategy Type</span>
-              <span class="label-hint">Catalyst or pattern</span>
-            </label>
-            <div class="setup-presets-grid">
-              <button
-                type="button"
-                v-for="preset in SETUP_PRESETS"
-                :key="preset"
-                class="preset-chip-btn"
-                :class="{ active: createForm.setupType.toLowerCase() === preset.toLowerCase() }"
-                @click="selectPresetSetup(preset)"
-              >
-                {{ preset }}
-              </button>
-            </div>
-            <input
-              type="text"
-              v-model="createForm.setupType"
-              class="form-input"
-              placeholder="Or enter custom setup (e.g. 9ema, High of Day, Round figure...)"
-            />
-          </div>
-
-          <!-- Section: Watched Value / Key Level -->
-          <div class="form-group">
-            <div class="form-label-row">
-              <label class="form-label">
-                <span>Watched Key Level</span>
-                <span class="label-hint">Price watched for trigger</span>
-              </label>
-              <button
-                type="button"
-                class="btn-quick-fill"
-                @click="fillAvgPriceAsWatched"
-                title="Fill entry price"
-              >
-                Use Entry Price
-              </button>
-            </div>
-            <input
-              type="text"
-              v-model="createForm.watchedValue"
-              class="form-input font-mono"
-              placeholder="e.g. $152.50, HOD $14.80, Whole Dollar $150..."
-            />
-          </div>
-
-          <!-- Section: Comment -->
-          <div class="form-group">
-            <label class="form-label">
-              <MessageSquare :size="13" class="accent-icon" />
-              <span>التعليق / Comment</span>
-              <span class="label-hint">Execution takeaway or key takeaway</span>
-            </label>
-            <input
-              type="text"
-              v-model="createForm.comment"
-              class="form-input"
-              placeholder="e.g. Good patience on 9 EMA, followed plan, trimmed at HOD..."
-            />
-          </div>
-
-          <!-- CREATE MODE: Executions Entry/Exit Builder -->
-          <div v-if="offcanvasMode === 'create'" class="form-section-card fills-builder-card">
-            <div class="section-header-row">
-              <h4 class="section-title">Execution Fills</h4>
-              <label class="checkbox-label font-xs">
-                <input type="checkbox" v-model="createForm.isMultiLeg" />
-                <span>Multi-Fill Builder (Scale-in / Avg down)</span>
-              </label>
-            </div>
-
-            <!-- Standard Mode: 1-Entry and optional 1-Exit -->
-            <div v-if="!createForm.isMultiLeg" class="standard-fills-box">
-              <!-- Entry Fill Box -->
-              <div class="fill-box entry">
-                <div class="fill-box-header">
-                  <span class="badge buy">{{ createForm.direction === 'LONG' ? 'ENTRY (BUY)' : 'ENTRY (SHORT)' }}</span>
-                </div>
-                <div class="fill-inputs-grid">
-                  <div class="form-group">
-                    <label class="form-label font-xs">Shares</label>
-                    <input type="number" v-model="createForm.entryQty" class="form-input font-mono" min="1" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label font-xs">Price ($)</label>
-                    <input type="number" step="0.01" v-model="createForm.entryPrice" class="form-input font-mono" placeholder="0.00" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label font-xs">Time</label>
-                    <input type="text" v-model="createForm.entryTime" class="form-input font-mono" placeholder="HH:MM:SS" />
-                  </div>
-                </div>
+                <label class="form-label required">Entry Price ($)</label>
+                <input
+                  v-model.number="form.entryPrice"
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  class="form-input font-bold"
+                  required
+                />
               </div>
 
-              <!-- Open position toggle -->
-              <div class="open-trade-checkbox-row">
-                <label class="checkbox-label">
-                  <input type="checkbox" v-model="createForm.isStillOpen" />
-                  <span>Trade Still Open (No Exit Fill Yet)</span>
+              <!-- Trade Sequence on this stock today -->
+              <div class="form-group">
+                <label class="form-label">
+                  Trade Sequence on this stock today
+                  <span class="text-xs text-muted font-normal">(Overtrading Detection)</span>
                 </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.tradeSequence === 1 }"
+                    @click="form.tradeSequence = 1"
+                  >
+                    1st Trade
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.tradeSequence === 2 }"
+                    @click="form.tradeSequence = 2"
+                  >
+                    2nd Trade
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.tradeSequence === 3 }"
+                    @click="form.tradeSequence = 3"
+                  >
+                    3rd Trade ⚠️
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.tradeSequence >= 4 }"
+                    @click="form.tradeSequence = 4"
+                  >
+                    4th+ Trade ⚠️
+                  </button>
+                </div>
+                <div v-if="form.tradeSequence >= 3" class="alert-box warn mt-2">
+                  <AlertTriangle :size="14" />
+                  <span>Flagged Mistake: Overtrading / Revenge risk on same stock.</span>
+                </div>
               </div>
 
-              <!-- Exit Fill Box (if closed) -->
-              <div v-if="!createForm.isStillOpen" class="fill-box exit">
-                <div class="fill-box-header">
-                  <span class="badge sell">{{ createForm.direction === 'LONG' ? 'EXIT (SELL)' : 'EXIT (COVER)' }}</span>
+              <!-- Frontside Setup -->
+              <div class="form-group">
+                <label class="form-label">Was this stock trading on the Frontside?</label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.frontsideSetup === true }"
+                    @click="form.frontsideSetup = true"
+                  >
+                    Yes (Frontside 🟢)
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.frontsideSetup === false }"
+                    @click="form.frontsideSetup = false"
+                  >
+                    No (Backside 🔴)
+                  </button>
                 </div>
-                <div class="fill-inputs-grid">
-                  <div class="form-group">
-                    <label class="form-label font-xs">Shares</label>
-                    <input type="number" v-model="createForm.exitQty" class="form-input font-mono" min="1" />
+                <div v-if="form.frontsideSetup === false" class="alert-box danger mt-2">
+                  <AlertTriangle :size="14" />
+                  <span>Flagged Mistake: Trading backside setups has significantly lower edge.</span>
+                </div>
+              </div>
+            </fieldset>
+
+            <!-- SECTION B: TECHNICAL LEVELS AT ENTRY -->
+            <fieldset class="form-section">
+              <legend class="section-legend">
+                <span class="legend-num">B</span> Technical Levels at Entry
+              </legend>
+
+              <div class="form-row-3">
+                <div class="form-group">
+                  <label class="form-label">9 EMA Value ($)</label>
+                  <input
+                    v-model.number="form.ema9Value"
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g. 182.10"
+                    class="form-input"
+                  />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">VWAP Value ($)</label>
+                  <input
+                    v-model.number="form.vwapValue"
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g. 181.80"
+                    class="form-input"
+                  />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Nearest Resistance ($)</label>
+                  <input
+                    v-model.number="form.nearestResistance"
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g. 185.00"
+                    class="form-input"
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <!-- SECTION C: ENTRY DISCIPLINE (CONDITIONAL LOGIC) -->
+            <fieldset class="form-section">
+              <legend class="section-legend">
+                <span class="legend-num">C</span> Entry Discipline
+              </legend>
+
+              <!-- Question 8: Predefined Entry Price -->
+              <div class="form-group">
+                <label class="form-label required">
+                  Did I define my entry price before entering the trade?
+                </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.predefinedEntry === true }"
+                    @click="form.predefinedEntry = true"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.predefinedEntry === false }"
+                    @click="form.predefinedEntry = false"
+                  >
+                    No
+                  </button>
+                </div>
+                <div v-if="form.predefinedEntry === false" class="alert-box danger mt-2">
+                  <AlertTriangle :size="14" />
+                  <span>Flagged Mistake: Entering without predefined entry price.</span>
+                </div>
+              </div>
+
+              <!-- Dynamic Sub-questions if Predefined Entry was YES -->
+              <div v-if="form.predefinedEntry === true" class="nested-conditional space-y-4">
+                <div class="form-group">
+                  <label class="form-label">What was your Planned Entry Price? ($)</label>
+                  <input
+                    v-model.number="form.plannedEntryPrice"
+                    type="number"
+                    step="0.01"
+                    placeholder="Planned price"
+                    class="form-input"
+                  />
+                </div>
+
+                <!-- Multi-select: Was entry [breakout, fomo, retest 9ema, retest vwap] -->
+                <div class="form-group">
+                  <div class="flex-between mb-1">
+                    <label class="form-label">
+                      What was the entry based on? (Entry was)
+                      <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                    </label>
+                    <button
+                      v-if="form.entryType"
+                      type="button"
+                      class="btn-xs-link text-rose"
+                      @click="clearReasonChips('entryType')"
+                    >
+                      Clear
+                    </button>
                   </div>
-                  <div class="form-group">
-                    <label class="form-label font-xs">Price ($)</label>
-                    <input type="number" step="0.01" v-model="createForm.exitPrice" class="form-input font-mono" placeholder="0.00" />
+                  <div class="chips-selector mb-2">
+                    <button
+                      v-for="chip in ENTRY_WAS_CHIPS"
+                      :key="chip"
+                      type="button"
+                      class="quick-chip"
+                      :class="{ active: isChipSelected('entryType', chip) }"
+                      @click="toggleReasonChip('entryType', chip)"
+                    >
+                      <span v-if="isChipSelected('entryType', chip)" class="chip-check">✓</span>
+                      {{ chip }}
+                    </button>
                   </div>
-                  <div class="form-group">
-                    <label class="form-label font-xs">Time</label>
-                    <input type="text" v-model="createForm.exitTime" class="form-input font-mono" placeholder="HH:MM:SS" />
+                  <input
+                    v-model="form.entryType"
+                    placeholder="Breakout, FOMO, Retest 9 EMA, Retest VWAP..."
+                    class="form-input"
+                  />
+                </div>
+
+                <!-- Question 9: Entered at Predefined Price? -->
+                <div class="form-group">
+                  <label class="form-label required">
+                    Did I enter at my predefined entry price?
+                  </label>
+                  <div class="segmented-control">
+                    <button
+                      type="button"
+                      class="seg-btn"
+                      :class="{ active: form.enteredAtPredefinedPrice === true }"
+                      @click="form.enteredAtPredefinedPrice = true"
+                    >
+                      Yes, executed at planned price 🟢
+                    </button>
+                    <button
+                      type="button"
+                      class="seg-btn"
+                      :class="{ active: form.enteredAtPredefinedPrice === false }"
+                      @click="form.enteredAtPredefinedPrice = false"
+                    >
+                      No, deviated from plan 🔴
+                    </button>
                   </div>
                 </div>
+
+                <!-- If NO to entered at predefined price -->
+                <div v-if="form.enteredAtPredefinedPrice === false" class="nested-conditional space-y-4">
+                  <div class="form-group">
+                    <label class="form-label required">
+                      Did you enter Above or Below your planned entry price?
+                    </label>
+                    <div class="segmented-control">
+                      <button
+                        type="button"
+                        class="seg-btn"
+                        :class="{ active: form.entryDeviationDirection === 'ABOVE' }"
+                        @click="form.entryDeviationDirection = 'ABOVE'"
+                      >
+                        Above Planned Price (Chased) ⚠️
+                      </button>
+                      <button
+                        type="button"
+                        class="seg-btn"
+                        :class="{ active: form.entryDeviationDirection === 'BELOW' }"
+                        @click="form.entryDeviationDirection = 'BELOW'"
+                      >
+                        Below Planned Price (Dip / Discount)
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Reason for Deviation (Multi-Select) -->
+                  <div class="form-group">
+                    <div class="flex-between mb-1">
+                      <label class="form-label">
+                        Why did you deviate from your planned entry?
+                        <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                      </label>
+                      <button
+                        v-if="form.entryDeviationReason"
+                        type="button"
+                        class="btn-xs-link text-rose"
+                        @click="clearReasonChips('entryDeviationReason')"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div class="chips-selector mb-2">
+                      <button
+                        v-for="chip in ENTRY_DEVIATION_CHIPS"
+                        :key="chip"
+                        type="button"
+                        class="quick-chip"
+                        :class="{ active: isChipSelected('entryDeviationReason', chip) }"
+                        @click="toggleReasonChip('entryDeviationReason', chip)"
+                      >
+                        <span v-if="isChipSelected('entryDeviationReason', chip)" class="chip-check">✓</span>
+                        {{ chip }}
+                      </button>
+                    </div>
+                    <input
+                      v-model="form.entryDeviationReason"
+                      placeholder="Type reason or select multiple chips above..."
+                      class="form-input"
+                    />
+                  </div>
+
+                  <!-- Question 10: Entering Above Planned Price Position Reduction -->
+                  <div v-if="form.entryDeviationDirection === 'ABOVE'" class="nested-conditional space-y-4">
+                    <div class="alert-box danger">
+                      <AlertTriangle :size="14" />
+                      <span>Flagged Mistake: Chased entry above planned price.</span>
+                    </div>
+
+                    <div class="form-group">
+                      <label class="form-label required">
+                        How did you manage position size after entering at a worse price?
+                      </label>
+                      <select v-model="form.enteredAboveAction" class="form-select">
+                        <option :value="null" disabled>Select position size management...</option>
+                        <option value="SOLD_HALF">Sold half of position immediately (Mitigated risk 🟢)</option>
+                        <option value="CLOSED_ENTIRE">Closed entire position immediately (Cut bad entry 🟢)</option>
+                        <option value="HELD_FULL">Held full position despite entering at worse price (🔴 Mistake)</option>
+                      </select>
+                    </div>
+
+                    <div v-if="form.enteredAboveAction === 'HELD_FULL'" class="form-group">
+                      <div class="flex-between mb-1">
+                        <label class="form-label">
+                          Why did you hold full size despite the bad entry?
+                          <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                        </label>
+                        <button
+                          v-if="form.enteredAboveReason"
+                          type="button"
+                          class="btn-xs-link text-rose"
+                          @click="clearReasonChips('enteredAboveReason')"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div class="chips-selector mb-2">
+                        <button
+                          v-for="chip in HELD_FULL_CHIPS"
+                          :key="chip"
+                          type="button"
+                          class="quick-chip"
+                          :class="{ active: isChipSelected('enteredAboveReason', chip) }"
+                          @click="toggleReasonChip('enteredAboveReason', chip)"
+                        >
+                          <span v-if="isChipSelected('enteredAboveReason', chip)" class="chip-check">✓</span>
+                          {{ chip }}
+                        </button>
+                      </div>
+                      <input
+                        v-model="form.enteredAboveReason"
+                        placeholder="Why did you hold full size?"
+                        class="form-input"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+
+            <!-- SECTION D: RISK MANAGEMENT & EXECUTION (CONDITIONAL LOGIC) -->
+            <fieldset class="form-section">
+              <legend class="section-legend">
+                <span class="legend-num">D</span> Risk Management & Execution
+              </legend>
+
+              <!-- Question 11: Predefined Stop Loss -->
+              <div class="form-group">
+                <label class="form-label required">
+                  Did I define my stop-loss level before entering the trade?
+                </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.predefinedStopLoss === true }"
+                    @click="form.predefinedStopLoss = true"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.predefinedStopLoss === false }"
+                    @click="form.predefinedStopLoss = false"
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+
+              <!-- Question 12: Averaging Down -->
+              <div class="form-group">
+                <label class="form-label required">
+                  Did I average down on this trade?
+                </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.averagedDown === false }"
+                    @click="form.averagedDown = false"
+                  >
+                    No 🟢
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.averagedDown === true }"
+                    @click="form.averagedDown = true"
+                  >
+                    Yes 🔴
+                  </button>
+                </div>
+
+                <!-- If YES to Averaging Down -->
+                <div v-if="form.averagedDown === true" class="nested-conditional mt-3 space-y-3">
+                  <div class="alert-box danger">
+                    <AlertTriangle :size="14" />
+                    <span>Critical Mistake: Averaging down into a losing position.</span>
+                  </div>
+                  <div class="flex-between mb-1">
+                    <label class="form-label">
+                      Why did you average down?
+                      <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                    </label>
+                    <button
+                      v-if="form.averagedDownReason"
+                      type="button"
+                      class="btn-xs-link text-rose"
+                      @click="clearReasonChips('averagedDownReason')"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div class="chips-selector mb-2">
+                    <button
+                      v-for="chip in AVERAGED_DOWN_CHIPS"
+                      :key="chip"
+                      type="button"
+                      class="quick-chip"
+                      :class="{ active: isChipSelected('averagedDownReason', chip) }"
+                      @click="toggleReasonChip('averagedDownReason', chip)"
+                    >
+                      <span v-if="isChipSelected('averagedDownReason', chip)" class="chip-check">✓</span>
+                      {{ chip }}
+                    </button>
+                  </div>
+                  <input
+                    v-model="form.averagedDownReason"
+                    placeholder="Explain why you averaged down or select chips above..."
+                    class="form-input"
+                  />
+                </div>
+              </div>
+
+              <!-- Question 13: Freezing During Losing Trade -->
+              <div class="form-group">
+                <label class="form-label required">
+                  Did the stock move against me while I froze and failed to exit?
+                </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.frozeOnLoss === false }"
+                    @click="form.frozeOnLoss = false"
+                  >
+                    No, executed exit cleanly 🟢
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.frozeOnLoss === true }"
+                    @click="form.frozeOnLoss = true"
+                  >
+                    Yes, froze / hesitated 🔴
+                  </button>
+                </div>
+
+                <!-- If YES to Freezing -->
+                <div v-if="form.frozeOnLoss === true" class="nested-conditional mt-3 space-y-3">
+                  <div class="alert-box danger">
+                    <AlertTriangle :size="14" />
+                    <span>Psychological Mistake: Froze and failed to execute stop loss.</span>
+                  </div>
+                  <div class="flex-between mb-1">
+                    <label class="form-label">
+                      What prevented you from exiting?
+                      <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                    </label>
+                    <button
+                      v-if="form.frozeReason"
+                      type="button"
+                      class="btn-xs-link text-rose"
+                      @click="clearReasonChips('frozeReason')"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div class="chips-selector mb-2">
+                    <button
+                      v-for="chip in FROZE_ON_LOSS_CHIPS"
+                      :key="chip"
+                      type="button"
+                      class="quick-chip"
+                      :class="{ active: isChipSelected('frozeReason', chip) }"
+                      @click="toggleReasonChip('frozeReason', chip)"
+                    >
+                      <span v-if="isChipSelected('frozeReason', chip)" class="chip-check">✓</span>
+                      {{ chip }}
+                    </button>
+                  </div>
+                  <input
+                    v-model="form.frozeReason"
+                    placeholder="What caused you to freeze? Select chips or type..."
+                    class="form-input"
+                  />
+                </div>
+              </div>
+
+              <!-- Question 14: Final Exit (Setup vs Fear) -->
+              <div class="form-group">
+                <label class="form-label required">
+                  Did you exit your final size based on Setup or Fear?
+                </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.finalExitType === 'SETUP' }"
+                    @click="form.finalExitType = 'SETUP'"
+                  >
+                    Setup Exit 🟢
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.finalExitType === 'FEAR' }"
+                    @click="form.finalExitType = 'FEAR'"
+                  >
+                    Fear Exit 🔴
+                  </button>
+                </div>
+
+                <!-- If FEAR -->
+                <div v-if="form.finalExitType === 'FEAR'" class="nested-conditional mt-3 space-y-3">
+                  <div class="alert-box danger">
+                    <AlertTriangle :size="14" />
+                    <span>⚠️ Flagged Mistake: Exited out of fear instead of respecting setup rules.</span>
+                  </div>
+                  <div class="flex-between mb-1">
+                    <label class="form-label">
+                      What was the reason for the fear exit?
+                      <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                    </label>
+                    <button
+                      v-if="form.finalExitFearReason"
+                      type="button"
+                      class="btn-xs-link text-rose"
+                      @click="clearReasonChips('finalExitFearReason')"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div class="chips-selector mb-2">
+                    <button
+                      v-for="chip in FEAR_EXIT_CHIPS"
+                      :key="chip"
+                      type="button"
+                      class="quick-chip"
+                      :class="{ active: isChipSelected('finalExitFearReason', chip) }"
+                      @click="toggleReasonChip('finalExitFearReason', chip)"
+                    >
+                      <span v-if="isChipSelected('finalExitFearReason', chip)" class="chip-check">✓</span>
+                      {{ chip }}
+                    </button>
+                  </div>
+                  <input
+                    v-model="form.finalExitFearReason"
+                    placeholder="State fear exit reason or select multiple chips above..."
+                    class="form-input"
+                  />
+                </div>
+              </div>
+
+              <!-- Question 15: Flush Occurred & Reason -->
+              <div class="form-group">
+                <label class="form-label required">
+                  Were you caught in a sudden Flush?
+                </label>
+                <div class="segmented-control">
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.flushOccurred === false }"
+                    @click="form.flushOccurred = false"
+                  >
+                    No, avoided flush 🟢
+                  </button>
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    :class="{ active: form.flushOccurred === true }"
+                    @click="form.flushOccurred = true"
+                  >
+                    Yes, caught in flush 🔴
+                  </button>
+                </div>
+
+                <!-- If Flush Occurred -->
+                <div v-if="form.flushOccurred === true" class="nested-conditional mt-3 space-y-3">
+                  <div class="alert-box danger">
+                    <AlertTriangle :size="14" />
+                    <span>⚠️ Flagged Mistake: Caught in a flush or failed to exit on signs of weakness.</span>
+                  </div>
+                  <div class="flex-between mb-1">
+                    <label class="form-label">
+                      What caused the flush or what error occurred?
+                      <span class="text-xs text-muted font-normal">(Multi-select: Click chips to toggle)</span>
+                    </label>
+                    <button
+                      v-if="form.flushReason"
+                      type="button"
+                      class="btn-xs-link text-rose"
+                      @click="clearReasonChips('flushReason')"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div class="chips-selector mb-2">
+                    <button
+                      v-for="chip in FLUSH_REASON_CHIPS"
+                      :key="chip"
+                      type="button"
+                      class="quick-chip"
+                      :class="{ active: isChipSelected('flushReason', chip) }"
+                      @click="toggleReasonChip('flushReason', chip)"
+                    >
+                      <span v-if="isChipSelected('flushReason', chip)" class="chip-check">✓</span>
+                      {{ chip }}
+                    </button>
+                  </div>
+                  <input
+                    v-model="form.flushReason"
+                    placeholder="State flush reason or select chips above..."
+                    class="form-input"
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <!-- SECTION E: SCREENSHOTS & NOTES -->
+            <fieldset class="form-section">
+              <legend class="section-legend">
+                <span class="legend-num">E</span> Chart Screenshots & Notes
+              </legend>
+
+              <div class="form-group">
+                <div class="flex-between mb-1">
+                  <label class="form-label">
+                    Chart Screenshots
+                    <span class="text-xs text-muted font-normal">(Multi-upload supported, drag & drop, or Ctrl+V)</span>
+                  </label>
+                  <span v-if="form.screenshots.length > 0" class="text-xs font-bold text-sky">
+                    {{ form.screenshots.length }} screenshot{{ form.screenshots.length > 1 ? 's' : '' }} attached
+                  </span>
+                </div>
+                <label
+                  class="upload-dropzone"
+                  @dragover.prevent
+                  @dragenter.prevent
+                  @drop="handleDropImages"
+                >
+                  <Upload :size="24" class="text-sky mb-1" />
+                  <span class="text-sm font-semibold text-gray-200">Click to upload multiple screenshots or drag & drop here</span>
+                  <span class="text-xs text-muted">Select multiple images at once (PNG, JPG, WebP) or paste with Ctrl+V</span>
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    class="hidden"
+                    @change="handleImageUpload"
+                  />
+                </label>
+
+                <!-- Thumbnails -->
+                <div v-if="form.screenshots.length > 0" class="screenshot-thumbnails mt-3">
+                  <div
+                    v-for="(img, idx) in form.screenshots"
+                    :key="idx"
+                    class="thumb-wrap"
+                    title="Click to view image"
+                    @click="activeLightboxImage = img"
+                  >
+                    <img :src="img" alt="Thumbnail" class="thumb-img" />
+                    <span class="thumb-idx">#{{ idx + 1 }}</span>
+                    <button
+                      type="button"
+                      class="btn-thumb-remove"
+                      title="Remove image"
+                      @click.stop="removeScreenshot(idx)"
+                    >
+                      <X :size="12" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <div class="flex items-center justify-between mb-1">
+                  <label class="form-label mb-0">التفكير الداخلى</label>
+                  <span class="badge-rtl-indicator">RTL Arabic 🇸🇦</span>
+                </div>
+                <HtmlEditor
+                  v-model="form.notes"
+                  dir="rtl"
+                  placeholder="اكتب ملاحظاتك، حالتك النفسية، والدروس المستفادة من هذه الصفقة..."
+                  min-height="130px"
+                />
+              </div>
+            </fieldset>
+
+            <!-- Real-Time Mistakes Feedback in Form Footer -->
+            <div v-if="liveFormMistakes.length > 0" class="form-live-summary">
+              <div class="text-rose text-sm font-bold">
+                {{ liveFormMistakes.length }} Mistake(s) will be logged:
               </div>
             </div>
 
-            <!-- Multi-Leg Builder (Supports Averaging down!) -->
-            <div v-else class="multileg-fills-box">
-              <div v-for="(leg, legIdx) in createForm.legs" :key="legIdx" class="leg-row">
-                <div class="leg-side-select">
-                  <select v-model="leg.side" class="leg-select">
-                    <option value="B">Buy</option>
-                    <option value="S">Sell</option>
-                  </select>
-                </div>
-                <input type="number" v-model="leg.qty" class="form-input font-mono leg-qty" placeholder="Qty" min="1" />
-                <input type="number" step="0.01" v-model="leg.price" class="form-input font-mono leg-price" placeholder="Price" />
-                <input type="text" v-model="leg.time" class="form-input font-mono leg-time" placeholder="Time" />
-                <button type="button" class="btn-del-leg" @click="removeLeg(legIdx)" title="Remove Fill">
-                  <X :size="14" />
-                </button>
-              </div>
-              <div class="multileg-actions">
-                <button type="button" class="btn ghost small" @click="addLeg('B')">+ Add Buy Fill</button>
-                <button type="button" class="btn ghost small" @click="addLeg('S')">+ Add Sell Fill</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- EDIT MODE: Existing Executions List & Add Fill -->
-          <div v-if="offcanvasMode === 'edit' && editingTrade" class="form-section-card">
-            <div class="section-header-row">
-              <h4 class="section-title">Executions in this Trade ({{ editingTrade.executions.length }})</h4>
-              <button
-                type="button"
-                class="btn primary small"
-                @click="showAddFillBox = !showAddFillBox"
-              >
-                <Plus :size="12" />
-                <span>{{ showAddFillBox ? 'Cancel Fill' : '+ Add Fill' }}</span>
+            <!-- Drawer Submit Buttons -->
+            <div class="drawer-footer">
+              <button type="button" class="btn-ghost" @click="closeOffcanvas">
+                Cancel
+              </button>
+              <button type="submit" class="btn-primary-glow">
+                {{ editingTradeId ? 'Update Trade' : 'Save & Analyze Trade' }}
               </button>
             </div>
-
-            <!-- Add Fill Box -->
-            <div v-if="showAddFillBox" class="add-fill-inline-box">
-              <div class="fill-inputs-grid">
-                <div class="form-group">
-                  <label class="form-label font-xs">Side</label>
-                  <select v-model="newFillForm.side" class="form-input">
-                    <option value="B">BUY</option>
-                    <option value="S">SELL</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label class="form-label font-xs">Shares</label>
-                  <input type="number" v-model="newFillForm.qty" class="form-input font-mono" min="1" />
-                </div>
-                <div class="form-group">
-                  <label class="form-label font-xs">Price ($)</label>
-                  <input type="number" step="0.01" v-model="newFillForm.price" class="form-input font-mono" placeholder="0.00" />
-                </div>
-                <div class="form-group">
-                  <label class="form-label font-xs">Time</label>
-                  <input type="text" v-model="newFillForm.time" class="form-input font-mono" placeholder="HH:MM:SS" />
-                </div>
-              </div>
-              <div class="add-fill-btn-row">
-                <button type="button" class="btn primary small" @click="addFillToExistingTrade">
-                  Add Execution Fill
-                </button>
-              </div>
-            </div>
-
-            <!-- Existing Fills Table -->
-            <div class="fills-mini-table">
-              <div
-                v-for="(ex, exIdx) in editingTrade.executions"
-                :key="exIdx"
-                class="fill-mini-row"
-                :class="{ 'anomaly-fill': ex.isAnomaly }"
-              >
-                <div class="fill-left">
-                  <span class="mini-side-badge" :class="ex.trd_type === 'B' ? 'buy' : 'sell'">
-                    {{ ex.trd_type }}
-                  </span>
-                  <span class="fill-qty-price font-mono">
-                    {{ num(ex.qty) }} sh @ ${{ Number(ex.price).toFixed(2) }}
-                  </span>
-                  <span v-if="ex.isAnomaly" class="fill-anomaly-pill">
-                    <AlertTriangle :size="10" /> {{ ex.anomalyReason }}
-                  </span>
-                </div>
-                <div class="fill-right font-mono muted">
-                  <span>{{ ex.exec_time || ex.execTime || '—' }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Section: Screenshots / Images -->
-          <div class="form-group">
-            <div class="form-label-row">
-              <label class="form-label">
-                <span>الصور والرسومات البيانية / Screenshots</span>
-                <span class="label-hint">({{ createForm.images.length }} attached)</span>
-              </label>
-              <label class="btn-upload-label" for="manualTradeImageInput">
-                <Plus :size="13" />
-                <span>Upload Screenshot</span>
-              </label>
-              <input
-                id="manualTradeImageInput"
-                type="file"
-                accept="image/*"
-                multiple
-                class="hidden-file-input"
-                @change="handleImageUpload"
-              />
-            </div>
-
-            <div class="clipboard-paste-tip">
-              <Camera :size="13" />
-              <span>Tip: Press <b>Ctrl + V</b> anywhere to paste chart screenshots directly from clipboard!</span>
-            </div>
-
-            <!-- Gallery Grid -->
-            <div v-if="createForm.images.length" class="offcanvas-gallery">
-              <div v-for="(img, idx) in createForm.images" :key="idx" class="gallery-thumb-card">
-                <img :src="img" alt="Trade Screenshot" class="thumb-img" @click="imagePreviewModal = img" />
-                <div class="thumb-overlay">
-                  <button class="thumb-act-btn zoom" @click.stop="imagePreviewModal = img" title="View Fullscreen">
-                    <ZoomIn :size="14" />
-                  </button>
-                  <button class="thumb-act-btn del" @click.stop="removeImage(idx)" title="Remove Screenshot">
-                    <Trash2 :size="14" />
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div v-else class="empty-gallery-dropzone">
-              <Camera :size="24" class="muted" />
-              <p>No screenshots attached.</p>
-              <small>Click "Upload Screenshot" or paste with Ctrl+V</small>
-            </div>
-          </div>
-
-          <!-- Section: Notes & Review -->
-          <div class="form-group">
-            <label class="form-label">
-              <span>ملاحظات الصفقة / Trade Notes</span>
-              <span class="label-hint">Thesis, emotional discipline, review</span>
-            </label>
-            <textarea
-              v-model="createForm.notes"
-              class="form-textarea"
-              rows="3"
-              placeholder="Why did you take this trade? Did you respect your stop?..."
-            ></textarea>
-          </div>
-        </div>
-
-        <!-- Drawer Footer -->
-        <div class="offcanvas-footer">
-          <button v-if="offcanvasMode === 'edit' && editingTrade" type="button" class="btn-delete-trade" @click="deleteTrade(editingTrade)">
-            <Trash2 :size="14" />
-            <span>Delete Trade</span>
-          </button>
-          <div class="footer-right-actions">
-            <button type="button" class="btn ghost" @click="closeOffcanvas">Cancel</button>
-            <button
-              v-if="offcanvasMode === 'create'"
-              type="button"
-              class="btn primary save-meta-btn"
-              :disabled="isSavingMeta"
-              @click="saveNewTrade"
-            >
-              <Check :size="14" />
-              <span>{{ isSavingMeta ? 'Saving...' : 'Save & Log Trade' }}</span>
-            </button>
-            <button
-              v-else
-              type="button"
-              class="btn primary save-meta-btn"
-              :disabled="isSavingMeta"
-              @click="saveEditedTrade"
-            >
-              <Check :size="14" />
-              <span>{{ isSavingMeta ? 'Saving...' : 'Update Trade' }}</span>
-            </button>
-          </div>
-        </div>
+          </form>
+        </aside>
       </div>
-    </aside>
+    </transition>
 
-    <!-- Fullscreen Image Lightbox Modal -->
-    <div v-if="imagePreviewModal" class="image-lightbox-modal" @click="imagePreviewModal = null">
+    <!-- Fullscreen Image Lightbox Preview -->
+    <div
+      v-if="activeLightboxImage"
+      class="lightbox-backdrop"
+      @click="activeLightboxImage = null"
+    >
       <div class="lightbox-content" @click.stop>
-        <img :src="imagePreviewModal" alt="Screenshot Full View" class="lightbox-img" />
-        <button class="lightbox-close" @click="imagePreviewModal = null" title="Close">
-          <X :size="20" />
+        <button class="btn-lightbox-close" @click="activeLightboxImage = null">
+          <X :size="24" />
         </button>
+        <img :src="activeLightboxImage" alt="Enlarged Trade Chart" class="lightbox-img" />
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.journal-view {
-  --bg: #0b1120;
-  --panel: rgba(22, 30, 49, 0.72);
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --accent: #3b82f6;
-  --win: #34d399;
-  --loss: #f87171;
-  --amber: #fbbf24;
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  color: var(--text);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 0.875rem;
+/* ============================================================================
+   DARK TRADING TERMINAL THEME STYLING
+   ============================================================================ */
+.journal-root {
+  min-height: 100vh;
+  background-color: #0b0f19;
+  color: #f1f5f9;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  padding: 18px 26px;
+  box-sizing: border-box;
+  font-size: 15px;
   line-height: 1.5;
-  text-align: left;
-  background:
-    radial-gradient(1000px 500px at 10% -10%, rgba(59, 130, 246, 0.12), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, rgba(139, 92, 246, 0.08), transparent 55%),
-    var(--bg);
-  border-radius: 14px;
 }
 
-.wrap {
-  max-width: 1480px;
-  margin: 0 auto;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.glass {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+/* Glass Panels */
+.glass-card {
+  background: rgba(15, 23, 42, 0.75);
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
 }
 
 /* Header */
 .journal-header {
-  padding: 16px 20px;
   display: flex;
-  align-items: center;
   justify-content: space-between;
+  align-items: center;
+  padding: 14px 22px;
+  margin-bottom: 20px;
   gap: 16px;
   flex-wrap: wrap;
 }
-.jh-title-row {
+
+.header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-.jh-icon {
-  color: #38bdf8;
-}
-.jh-title {
-  margin: 0;
-  font-size: 1.35rem;
-  font-weight: 800;
-  color: #f8fafc;
-}
-.jh-badge {
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(56, 189, 248, 0.12);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.3);
-}
-.jh-desc {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-.jh-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  gap: 24px;
   flex-wrap: wrap;
 }
-.log-trade-hero-btn {
-  display: inline-flex;
+
+.brand-badge {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.84rem;
-  font-weight: 700;
-  padding: 8px 16px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+  gap: 12px;
 }
 
-/* Empty State */
-.empty {
-  padding: 60px 24px;
-  display: flex;
-  justify-content: center;
-  text-align: center;
-}
-.empty-journal-card {
-  max-width: 520px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
-.empty-icon-wrap {
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
-  background: rgba(56, 189, 248, 0.1);
-  border: 1px solid rgba(56, 189, 248, 0.25);
+.brand-icon {
+  width: 42px;
+  height: 42px;
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #38bdf8;
+  color: #fff;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.4);
 }
-.empty-journal-card h2 {
+
+.brand-title {
+  font-size: 1.3rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
   margin: 0;
-  font-size: 1.4rem;
-  font-weight: 800;
-}
-.empty-journal-card p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.88rem;
-  line-height: 1.5;
-}
-.empty-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 10px;
-}
-.large-btn {
-  padding: 10px 20px;
-  font-size: 0.9rem;
-  font-weight: 700;
+  background: linear-gradient(to right, #ffffff, #94a3b8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
-/* Floating Actions */
-.floating-actions {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  z-index: 1000;
-}
-.floating-btn {
-  background: rgba(30, 41, 59, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #f1f5f9;
-  border-radius: 50px;
-  padding: 10px 16px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(10px);
-  font-size: 0.82rem;
-  font-weight: 700;
-  transition: all 0.2s ease;
-}
-.floating-btn:hover {
-  background: #334155;
-  transform: translateY(-2px);
-}
-.log-trade-floating-btn {
-  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
-  color: #fff !important;
-  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.45) !important;
-}
-
-/* Universal Filter Bar */
-.universal-filter-bar {
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.uf-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.uf-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-}
-.uf-label {
-  font-size: 0.72rem;
-  color: var(--muted);
-  font-weight: 600;
-}
-.uf-select, .uf-input {
-  background: transparent;
-  border: none;
-  color: var(--text);
-  font-size: 0.78rem;
-  outline: none;
-}
-.uf-select option {
-  background: #1e293b;
-  color: #f8fafc;
-}
-.uf-search {
-  flex: 1;
-  min-width: 220px;
-}
-.uf-search input {
-  width: 100%;
-}
-.uf-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.74rem;
-  color: var(--muted);
-}
-.active-badge {
-  background: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-weight: 600;
-}
-.storage-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #38bdf8;
-  font-weight: 600;
-}
-.storage-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #38bdf8;
-}
-
-/* Main Navigation Tabs */
-.main-tabs-nav {
-  display: flex;
-  gap: 8px;
-}
-.main-tab-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 8px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.82rem;
-  transition: all 0.15s ease;
-}
-.main-tab-btn.active {
-  background: rgba(59, 130, 246, 0.15);
-  border-color: rgba(59, 130, 246, 0.4);
-  color: #fff;
-}
-.tab-badge {
-  background: rgba(255, 255, 255, 0.1);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.7rem;
-}
-
-/* Toolbar */
-.toolbar {
-  padding: 8px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-.toolbar .tabs {
-  display: flex;
-  gap: 6px;
-}
-.toolbar .tabs button {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  padding: 6px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.toolbar .tabs button.on {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  font-weight: 600;
-}
-.toolbar .tabs button em {
-  font-style: normal;
-  background: rgba(255, 255, 255, 0.1);
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 0.7rem;
-}
-.table-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* General Buttons */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 0.78rem;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  border: 1px solid transparent;
-}
-.btn.primary {
-  background: #2563eb;
-  color: #fff;
-}
-.btn.primary:hover {
-  background: #1d4ed8;
-}
-.btn.ghost {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-  border-color: var(--border);
-}
-.btn.ghost:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-.btn.small {
-  padding: 4px 10px;
-  font-size: 0.74rem;
-}
-
-/* Table styles */
-.tbl-wrap {
-  overflow-x: auto;
-}
-.tbl {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
-}
-.tbl th {
-  padding: 8px 12px;
-  font-weight: 600;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-  position: relative;
-  user-select: none;
-}
-.tbl td {
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-.clickable-row {
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-.clickable-row:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-.clickable-row.open {
-  background: rgba(59, 130, 246, 0.06);
-}
-.col-resizer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 5px;
-  cursor: col-resize;
-}
-
-/* Trade Cards Stack */
-.trades-cards-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-top: 12px;
-}
-.trade-card-wrapper {
-  border: 1px solid rgba(59, 130, 246, 0.28);
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.55);
-  overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
-  transition: all 0.2s ease;
-}
-.trade-card-wrapper:hover {
-  border-color: rgba(59, 130, 246, 0.48);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
-}
-.trade-card-wrapper.has-anomaly {
-  border-color: rgba(239, 68, 68, 0.42);
-}
-.trade-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 16px;
-  background: rgba(30, 41, 59, 0.65);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  flex-wrap: wrap;
-}
-.trade-header-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.trade-num-badge {
-  font-size: 0.74rem;
-  font-weight: 700;
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.05);
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-.trade-symbol-tag {
-  font-size: 0.92rem;
-  font-weight: 800;
-  color: #f8fafc;
-}
-.trade-dir-tag {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-.trade-dir-tag.long {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.3);
-}
-.trade-dir-tag.short {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(248, 113, 113, 0.3);
-}
-.trade-status-tag {
-  font-size: 0.72rem;
-  padding: 2px 8px;
-  border-radius: 4px;
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.04);
-}
-.trade-status-tag.open {
-  background: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.3);
-}
-.anomaly-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  background: rgba(239, 68, 68, 0.2);
-  color: #fca5a5;
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  padding: 2px 8px;
-  border-radius: 999px;
-  animation: pulseGlow 2s infinite;
-}
-@keyframes pulseGlow {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.75; }
-}
-
-.trade-header-tactics {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.setup-pill {
-  font-size: 0.74rem;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.setup-pill.empty {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
-}
-.setup-badge {
-  padding: 2px 7px;
-  border-radius: 5px;
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-.setup-ema { background: rgba(59, 130, 246, 0.18); color: #60a5fa; border: 1px solid rgba(96, 165, 250, 0.35); }
-.setup-hod { background: rgba(245, 158, 11, 0.18); color: #fcd34d; border: 1px solid rgba(252, 211, 77, 0.35); }
-.setup-round { background: rgba(168, 85, 247, 0.18); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.35); }
-.setup-vwap { background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.35); }
-.setup-breakout { background: rgba(236, 72, 153, 0.18); color: #f472b6; border: 1px solid rgba(244, 114, 182, 0.35); }
-.setup-custom { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
-
-.watched-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.73rem;
-  background: rgba(56, 189, 248, 0.12);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.3);
-  padding: 3px 9px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.watched-pill.empty {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  border: 1px dashed rgba(255, 255, 255, 0.18);
-}
-.watched-val-text {
-  color: #38bdf8;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.comment-pill-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.72rem;
-  font-weight: 500;
-  background: rgba(16, 185, 129, 0.12);
-  color: #6ee7b7;
-  border: 1px solid rgba(16, 185, 129, 0.28);
-  padding: 3px 9px;
-  border-radius: 6px;
-  cursor: pointer;
-  max-width: 200px;
-}
-.comment-pill-btn.empty {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  border: 1px dashed rgba(255, 255, 255, 0.18);
-  max-width: none;
-}
-.comment-pill-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.images-pill-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  background: rgba(139, 92, 246, 0.14);
-  color: #a78bfa;
-  border: 1px solid rgba(167, 139, 250, 0.3);
-  padding: 3px 9px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.images-pill-btn.empty {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--muted);
-  border: 1px dashed rgba(255, 255, 255, 0.18);
-}
-
-.trade-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.trade-pnl-box {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  line-height: 1.2;
-}
-.pnl-val {
-  font-size: 0.92rem;
-  font-weight: 700;
-}
-.pnl-shares {
-  font-size: 0.7rem;
-}
-.btn-edit-trade {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  padding: 5px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-/* Anomaly Row Highlight with light red opacity */
-.anomaly-row {
-  background-color: rgba(239, 68, 68, 0.14) !important;
-  border-left: 3px solid #ef4444 !important;
-}
-.side-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.anomaly-label-tag {
-  font-size: 0.65rem;
-  font-weight: 800;
-  background: #ef4444;
-  color: #fff;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-
-/* Badges */
-.badge {
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.7rem;
-  font-weight: 700;
-}
-.badge.buy { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-.badge.sell { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-
-.col-img-btn, .col-edit-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 2px 7px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.72rem;
-}
-
-.comment-cell-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: #cbd5e1;
-  font-size: 0.76rem;
-  max-width: 100%;
-  cursor: pointer;
-}
-.comment-icon { flex-shrink: 0; color: #34d399; }
-.comment-text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Offcanvas Drawer */
-.offcanvas-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.68);
-  backdrop-filter: blur(4px);
-  z-index: 99998;
-}
-.offcanvas-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 520px;
-  max-width: 94vw;
-  background: #0f172a;
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: -10px 0 35px rgba(0, 0, 0, 0.65);
-  z-index: 99999;
-  transform: translateX(100%);
-  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-  display: flex;
-  flex-direction: column;
-}
-.offcanvas-drawer.open {
-  transform: translateX(0);
-}
-.offcanvas-content {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
-.offcanvas-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 16px 20px;
-  background: rgba(30, 41, 59, 0.65);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-.offcanvas-title-group {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.offcanvas-badge-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.offcanvas-tag {
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.06);
-  padding: 2px 7px;
-  border-radius: 4px;
-}
-.offcanvas-symbol {
-  font-size: 1.1rem;
-  font-weight: 800;
-  color: #f8fafc;
-}
-.offcanvas-dir-badge {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-}
-.offcanvas-dir-badge.long { background: rgba(16, 185, 129, 0.15); color: #34d399; }
-.offcanvas-dir-badge.short { background: rgba(239, 68, 68, 0.15); color: #f87171; }
-.offcanvas-sub {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-.offcanvas-close-btn {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 6px;
-}
-.offcanvas-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.form-section-card {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.section-title {
-  margin: 0;
+.brand-sub {
   font-size: 0.85rem;
-  font-weight: 700;
-  color: #e2e8f0;
+  color: #94a3b8;
+  margin: 0;
 }
-.section-header-row {
+
+/* Nav Tabs */
+.nav-tabs {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.form-row-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.form-group {
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-}
-.form-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #e2e8f0;
-}
-.form-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.label-hint {
-  font-size: 0.7rem;
-  color: var(--muted);
-  font-weight: 400;
-}
-.form-input, .form-textarea {
-  width: 100%;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--border);
+  padding: 5px;
   border-radius: 8px;
-  padding: 8px 12px;
-  color: var(--text);
-  font-size: 0.82rem;
-  outline: none;
-  box-sizing: border-box;
-}
-.form-input:focus, .form-textarea:focus {
-  border-color: var(--accent);
-}
-.uppercase { text-transform: uppercase; }
-
-.dir-toggle-group {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.dir-toggle-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 700;
-  font-size: 0.78rem;
-  transition: all 0.15s ease;
-}
-.dir-toggle-btn.active {
-  background: rgba(16, 185, 129, 0.2);
-  color: #34d399;
-  border-color: #34d399;
-}
-.dir-toggle-btn.short.active {
-  background: rgba(239, 68, 68, 0.2);
-  color: #f87171;
-  border-color: #f87171;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.setup-presets-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.preset-chip-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #cbd5e1;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 0.74rem;
-  cursor: pointer;
-}
-.preset-chip-btn.active {
-  background: #2563eb;
-  color: #fff;
-  border-color: #3b82f6;
-  font-weight: 600;
-}
-.btn-quick-fill {
-  background: rgba(59, 130, 246, 0.15);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  color: #60a5fa;
-  font-size: 0.7rem;
-  padding: 2px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-/* Fills builder */
-.standard-fills-box {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.fill-box {
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.fill-box.entry { border-left: 3px solid #10b981; }
-.fill-box.exit { border-left: 3px solid #ef4444; }
-.fill-inputs-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-.open-trade-checkbox-row {
+.tab-btn {
   display: flex;
   align-items: center;
-  padding: 4px 0;
-}
-.checkbox-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  cursor: pointer;
-  color: var(--text);
-}
-
-.multileg-fills-box {
-  display: flex;
-  flex-direction: column;
   gap: 8px;
-}
-.leg-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.leg-select {
-  background: #1e293b;
-  border: 1px solid var(--border);
-  color: #fff;
-  padding: 6px;
-  border-radius: 6px;
-  font-size: 0.76rem;
-}
-.leg-qty { width: 85px; }
-.leg-price { flex: 1; }
-.leg-time { width: 90px; }
-.btn-del-leg {
+  padding: 8px 16px;
   background: transparent;
   border: none;
-  color: #ef4444;
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.92rem;
+  font-weight: 600;
   cursor: pointer;
-  padding: 4px;
-}
-.multileg-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
+  transition: all 0.15s ease;
 }
 
-/* Existing Fills inside Edit Mode */
-.fills-mini-table {
+.tab-btn:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tab-btn.active {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+/* Header Actions */
+.header-actions {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.date-chips {
+  display: flex;
   gap: 4px;
   background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-.fill-mini-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
-  border-radius: 5px;
-  font-size: 0.74rem;
-}
-.fill-mini-row.anomaly-fill {
-  background: rgba(239, 68, 68, 0.16);
-  border-left: 2px solid #ef4444;
-}
-.fill-left { display: flex; align-items: center; gap: 8px; }
-.mini-side-badge { font-size: 0.68rem; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
-.mini-side-badge.buy { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-.mini-side-badge.sell { background: rgba(239, 68, 68, 0.2); color: #f87171; }
-.fill-anomaly-pill {
-  font-size: 0.65rem;
-  font-weight: 700;
-  color: #fca5a5;
-  background: rgba(239, 68, 68, 0.2);
-  padding: 1px 5px;
-  border-radius: 3px;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+  padding: 4px;
+  border-radius: 6px;
 }
 
-.add-fill-inline-box {
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.25);
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 8px;
-}
-.add-fill-btn-row {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 8px;
-}
-
-/* Gallery & Lightbox */
-.btn-upload-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(139, 92, 246, 0.18);
-  color: #c084fc;
-  border: 1px solid rgba(192, 132, 252, 0.35);
-  padding: 3px 9px;
-  border-radius: 5px;
-  font-size: 0.72rem;
+.chip-btn {
+  padding: 6px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 0.86rem;
   font-weight: 600;
   cursor: pointer;
 }
-.hidden-file-input { display: none; }
-.clipboard-paste-tip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.72rem;
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.03);
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px dashed rgba(255, 255, 255, 0.12);
-}
-.offcanvas-gallery {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-top: 8px;
-}
-.gallery-thumb-card {
-  position: relative;
-  aspect-ratio: 16/10;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #000;
-}
-.thumb-img { width: 100%; height: 100%; object-fit: cover; cursor: pointer; display: block; }
-.thumb-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-.gallery-thumb-card:hover .thumb-overlay { opacity: 1; }
-.thumb-act-btn {
-  background: rgba(255, 255, 255, 0.2);
-  border: none;
-  color: #fff;
-  padding: 6px;
-  border-radius: 50%;
-  cursor: pointer;
-}
-.thumb-act-btn.del:hover { background: #ef4444; }
-.empty-gallery-dropzone {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 20px;
-  border: 1px dashed rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
-  text-align: center;
-  color: var(--muted);
-  font-size: 0.78rem;
+
+.chip-btn.active {
+  background: #1e293b;
+  color: #f8fafc;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
-/* Offcanvas Footer */
-.offcanvas-footer {
+.btn-primary-glow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 20px;
-  background: rgba(15, 23, 42, 0.95);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-.footer-right-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-.btn-delete-trade {
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
-  border: 1px solid rgba(248, 113, 113, 0.3);
-  padding: 6px 12px;
-  border-radius: 6px;
+  gap: 7px;
+  padding: 9px 20px;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #ffffff;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 0 14px rgba(37, 99, 235, 0.4);
+  transition: all 0.2s ease;
+}
+
+.btn-primary-glow:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 20px rgba(37, 99, 235, 0.6);
+}
+
+.utility-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.json-file-status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-}
-.btn-delete-trade:hover {
-  background: #ef4444;
-  color: #fff;
+  gap: 7px;
+  padding: 6px 12px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: monospace;
+  color: #34d399;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
 }
 
-/* Lightbox Modal */
-.image-lightbox-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.88);
-  backdrop-filter: blur(8px);
-  z-index: 100000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+.json-file-status-pill:hover {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.45);
 }
-.lightbox-content { position: relative; max-width: 90vw; max-height: 90vh; }
-.lightbox-img { max-width: 100%; max-height: 85vh; border-radius: 8px; display: block; }
-.lightbox-close {
-  position: absolute;
-  top: -14px;
-  right: -14px;
-  background: #1e293b;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #fff;
+
+.json-file-status-pill .file-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+}
+
+.json-file-status-pill .file-dot.disconnected {
+  background: #f59e0b;
+  box-shadow: 0 0 6px #f59e0b;
+}
+
+.json-file-status-pill .file-icon {
+  color: #10b981;
+  flex-shrink: 0;
+}
+
+.json-file-status-pill .file-label {
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.json-file-status-pill .file-count {
+  opacity: 0.85;
+  font-weight: 500;
+}
+
+.icon-spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.btn-icon {
   width: 32px;
   height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #94a3b8;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-/* Toast */
-.floating-status {
-  position: fixed;
-  top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100001;
-  padding: 8px 18px;
-  border-radius: 8px;
-  font-size: 0.82rem;
-  font-weight: 600;
+.btn-icon:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.btn-icon.danger:hover {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Empty Journal Welcome Card */
+.empty-journal-card {
+  text-align: center;
+  padding: 48px 24px;
+  max-width: 600px;
+  margin: 40px auto;
+}
+
+.ej-icon {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 16px auto;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
   display: flex;
   align-items: center;
-  gap: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  justify-content: center;
 }
-.floating-status.good { background: rgba(16, 185, 129, 0.9); color: #fff; }
-.floating-status.bad { background: rgba(239, 68, 68, 0.9); color: #fff; }
-.floating-status.muted { background: rgba(30, 41, 59, 0.95); color: #cbd5e1; }
-.status-close { background: transparent; border: none; color: #fff; cursor: pointer; }
 
-/* KPI Cards */
-.kpis {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 12px;
-  margin-bottom: 14px;
+.ej-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  margin: 0 0 8px 0;
+  color: #fff;
 }
-.kpi {
-  padding: 14px;
+
+.ej-desc {
+  font-size: 0.86rem;
+  color: #94a3b8;
+  line-height: 1.5;
+  margin: 0 0 24px 0;
+}
+
+/* KPI Grid */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.kpi-card.span-2 {
+  grid-column: span 2;
+}
+
+.kpi-card.highlight-border {
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.kpi-icon-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.kpi-icon-wrap.blue { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+.kpi-icon-wrap.rose { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
+.kpi-icon-wrap.green { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+.kpi-icon-wrap.amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+.kpi-icon-wrap.purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.kpi-icon-wrap.red { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+
+.kpi-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.kpi-label {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #94a3b8;
+  letter-spacing: 0.05em;
+}
+
+.kpi-val {
+  font-size: 1.7rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.kpi-sub {
+  font-size: 0.84rem;
+  margin-top: 2px;
+}
+
+.progress-bar-wrap {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.most-frequent-box {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.k-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; font-weight: 700; }
-.k-value { font-size: 1.25rem; font-weight: 800; color: #fff; }
-.k-sub { font-size: 0.72rem; color: var(--muted); }
-.charts-grid {
+
+.mf-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #fca5a5;
+}
+
+.mf-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Sections */
+.section-card {
+  padding: 20px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.section-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  margin: 0;
+  color: #f8fafc;
+}
+
+.section-sub {
+  font-size: 0.88rem;
+  color: #94a3b8;
+  margin: 2px 0 0 0;
+}
+
+/* Mistake Rows */
+.mistake-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mistake-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 2fr 1.5fr 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.mistake-row.has-occurrences {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mistake-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.m-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.m-color-indicator {
+  width: 4px;
+  height: 36px;
+  border-radius: 2px;
+}
+
+.m-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.m-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.m-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.badge-cat {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid;
+}
+
+.badge-cat-sm {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.m-desc {
+  font-size: 0.84rem;
+  color: #94a3b8;
+  margin: 2px 0 0 0;
+}
+
+.m-center {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.m-bar-bg {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.m-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+}
+
+.m-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.84rem;
+}
+
+.m-count {
+  font-weight: 800;
+  color: #cbd5e1;
+}
+
+.m-pct {
+  color: #94a3b8;
+}
+
+.m-right {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.trend-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.trend-tag.bad { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+.trend-tag.good { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+.trend-tag.neutral { background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
+
+/* Patterns Grid */
+.patterns-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.pattern-card {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
-.chart-card { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
-.chart-header { display: flex; align-items: center; justify-content: space-between; }
-.chart-title { display: flex; align-items: center; gap: 6px; font-size: 0.84rem; font-weight: 700; }
-.bar-chart-container {
+
+.pattern-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 12px;
-  height: 180px;
+}
+
+.p-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.p-icon.yellow { background: rgba(234, 179, 8, 0.15); color: #facc15; }
+.p-icon.orange { background: rgba(249, 115, 22, 0.15); color: #fb923c; }
+.p-icon.purple { background: rgba(192, 132, 252, 0.15); color: #c084fc; }
+
+.pattern-title {
+  font-size: 1.08rem;
+  font-weight: 800;
+  margin: 0;
+  color: #f8fafc;
+}
+
+.pattern-sub {
+  font-size: 0.84rem;
+  color: #94a3b8;
+  margin: 2px 0 0 0;
+}
+
+.sequence-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.seq-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.seq-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+}
+
+.seq-label { font-weight: 700; color: #cbd5e1; }
+.seq-rate { font-weight: 600; }
+
+.seq-progress-wrap {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.seq-progress {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.pattern-note {
+  font-size: 0.86rem;
+  color: #cbd5e1;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 10px 12px;
+  border-radius: 6px;
+  border-left: 3px solid #3b82f6;
+  line-height: 1.45;
+}
+
+.frontside-boxes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.fs-box {
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px solid;
+  text-align: center;
+}
+
+.fs-box.green {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.fs-box.red {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.fs-head {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.fs-val {
+  font-size: 1.45rem;
+  font-weight: 900;
+  margin: 4px 0;
+}
+
+.fs-sub {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+/* Category Bars Grid */
+.category-bars-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.cat-bar-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 12px;
+  border-radius: 8px;
+}
+
+.cat-bar-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.cat-bar-outer {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cat-bar-inner {
+  height: 100%;
+  border-radius: 3px;
+}
+
+/* ============================================================================
+   TAB 2: WEEKLY AUDIT & COMPARISON
+   ============================================================================ */
+.week-nav-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 18px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.wn-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.nav-arrow-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #cbd5e1;
+  padding: 7px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nav-arrow-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.wn-label-box {
+  display: flex;
+  flex-direction: column;
+}
+
+.wn-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #94a3b8;
+}
+
+.wn-range {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #38bdf8;
+}
+
+.weekly-delta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.delta-col {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.delta-col.green-border { border-color: rgba(16, 185, 129, 0.3); }
+.delta-col.red-border { border-color: rgba(239, 68, 68, 0.3); }
+
+.delta-col-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.delta-title {
+  font-size: 1.08rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.delta-sub {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin: 1px 0 0 0;
+}
+
+.delta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.delta-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+.delta-item.good { background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981; }
+.delta-item.bad { background: rgba(239, 68, 68, 0.08); border-left: 3px solid #ef4444; }
+
+.di-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.di-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.di-desc {
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.di-pill {
+  font-size: 0.85rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.di-pill.good { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.di-pill.bad { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.audit-table th {
+  text-align: left;
+  padding: 10px 12px;
+  color: #94a3b8;
+  font-weight: 700;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.audit-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.delta-badge {
+  font-size: 0.84rem;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+
+.delta-badge.good { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.delta-badge.bad { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+.delta-badge.neutral { background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
+
+.status-pill {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.status-pill.good { color: #34d399; background: rgba(16, 185, 129, 0.15); }
+.status-pill.bad { color: #f87171; background: rgba(239, 68, 68, 0.15); }
+.status-pill.neutral { color: #94a3b8; }
+
+/* ============================================================================
+   TAB 3: TRADE HISTORY & DETAIL LOG
+   ============================================================================ */
+/* Date Filter Group in Trading Log List */
+.date-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.date-filter-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.date-filter-btn:hover {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.date-filter-btn.active {
+  background: #1e293b;
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.calendar-picker-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.calendar-btn {
+  padding: 6px 10px;
+}
+
+.custom-range-text {
+  font-size: 0.8rem;
+  color: #38bdf8;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.range-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 100;
+  min-width: 280px;
+  padding: 14px;
+  background: #0f172a;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.75), 0 0 15px rgba(56, 189, 248, 0.15);
+}
+
+.range-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.range-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.btn-popover-close {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+
+.btn-popover-close:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.range-inputs-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.range-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.range-input-group label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.date-input {
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: #f1f5f9;
+  font-size: 0.88rem;
+  outline: none;
+  color-scheme: dark;
+}
+
+.date-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.range-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.btn-apply-range {
+  padding: 6px 14px;
+  background: #2563eb;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-apply-range:hover {
+  background: #1d4ed8;
+}
+
+.btn-clear-range {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.btn-clear-range:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.filter-divider {
+  width: 1px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 4px;
+}
+
+.btn-sort-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #cbd5e1;
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-sort-toggle:hover {
+  background: #1e293b;
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  flex-wrap: wrap;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 6px 10px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.search-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #f1f5f9;
+  font-size: 0.92rem;
+  width: 100%;
+}
+
+.clear-search {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+}
+
+.filter-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 6px 12px;
+}
+
+.filter-select {
+  background: transparent;
+  border: none;
+  color: #cbd5e1;
+  font-size: 0.88rem;
+  outline: none;
+}
+
+.filter-select option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.discipline-chips {
+  display: flex;
+  gap: 4px;
+}
+
+.disc-chip {
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.disc-chip.active {
+  background: #1e293b;
+  color: #f8fafc;
+  border-color: #38bdf8;
+}
+
+.disc-chip.clean.active { border-color: #10b981; color: #34d399; }
+.disc-chip.flaws.active { border-color: #ef4444; color: #f87171; }
+
+/* Selection & Export Action Bar */
+.selection-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  gap: 14px;
+  flex-wrap: wrap;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.st-left, .st-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.st-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.st-select-text {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.st-count-pill {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.btn-clear-selection {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 2px 6px;
+  transition: color 0.15s ease;
+}
+
+.btn-clear-selection:hover {
+  color: #f87171;
+}
+
+.btn-export-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #ffffff;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.3);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.btn-export-pdf:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0369a1, #075985);
+  border-color: rgba(56, 189, 248, 0.75);
+  box-shadow: 0 6px 18px rgba(2, 132, 199, 0.45);
+  transform: translateY(-1px);
+}
+
+.btn-export-pdf:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.tc-select-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin-right: 2px;
+}
+
+.tc-select-wrap:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.trade-checkbox {
+  width: 17px;
+  height: 17px;
+  cursor: pointer;
+  accent-color: #0284c7;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.trade-card {
+  padding: 16px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  transform: none !important;
+}
+
+.trade-card.is-selected {
+  border-color: rgba(56, 189, 248, 0.75) !important;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(14, 116, 144, 0.18)) !important;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.22);
+}
+
+.trade-card.clickable-row {
+  cursor: pointer;
+}
+
+.trade-card.clickable-row:hover {
+  transform: none !important;
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(30, 41, 59, 0.45);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.trade-card.has-flaws {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.trade-card.has-flaws.clickable-row:hover {
+  transform: none !important;
+  border-color: rgba(239, 68, 68, 0.65);
+  background: rgba(30, 41, 59, 0.45);
+}
+
+.trade-card.is-clean {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.trade-card.is-clean.clickable-row:hover {
+  transform: none !important;
+  border-color: rgba(16, 185, 129, 0.65);
+  background: rgba(30, 41, 59, 0.45);
+}
+
+.tc-entry-inline {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.9rem;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  margin-left: 2px;
+}
+
+.tc-entry-inline strong {
+  color: #fff;
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+.tc-entry-time {
+  color: #94a3b8;
+  font-size: 0.82rem;
+  margin-left: 6px;
+  font-weight: 400;
+}
+
+.tc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.tc-left, .tc-center, .tc-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tc-symbol {
+  font-size: 1.25rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  color: #fff;
+}
+
+.badge-direction {
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.badge-direction.long { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.badge-direction.short { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+.badge-session-pill {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 4px;
+  border: 1px solid;
+}
+
+.badge-seq {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cbd5e1;
+}
+
+.badge-seq.warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+
+.badge-fs {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.badge-fs.front { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+.badge-fs.back { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+.badge-fs.none { background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
+
+.tc-entry, .tc-exit {
+  font-size: 0.92rem;
+  color: #cbd5e1;
+}
+
+.tc-pnl {
+  font-size: 1.2rem;
+  font-weight: 900;
+}
+
+.badge-open {
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+}
+
+.tc-time-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.tc-time {
+  font-size: 0.86rem;
+}
+
+.tc-est-badge {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-family: var(--font-mono, monospace);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-row-action {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.btn-row-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.btn-row-action.danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.tc-mistakes-bar {
+  margin-top: 10px;
   padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
-.bar-group { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; }
-.bars-pair { display: flex; gap: 3px; align-items: flex-end; height: 150px; }
-.chart-bar { width: 10px; border-radius: 3px 3px 0 0; }
-.chart-bar.buy-bar { background: #10b981; }
-.chart-bar.sell-bar { background: #ef4444; }
-.bar-date-label { font-size: 0.65rem; color: var(--muted); }
 
-.symbol-bars-list { display: flex; flex-direction: column; gap: 10px; }
-.sym-row { display: flex; flex-direction: column; gap: 4px; }
-.sym-meta { display: flex; justify-content: space-between; font-size: 0.78rem; }
-.sym-track { width: 100%; height: 6px; background: rgba(255, 255, 255, 0.05); border-radius: 999px; overflow: hidden; }
-.sym-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6); border-radius: 999px; }
+.clean-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.1);
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
 
-/* Responsive */
-@media (max-width: 1200px) {
-  .kpis { grid-template-columns: repeat(3, 1fr); }
-  .charts-grid { grid-template-columns: 1fr; }
+.mistake-pills-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-@media (max-width: 768px) {
-  .kpis { grid-template-columns: repeat(2, 1fr); }
-  .offcanvas-drawer { width: 100vw; }
+
+.mistake-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid;
 }
+
+.tc-expanded-body {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tc-expanded-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 8px;
+}
+
+.btn-edit-inside-expanded {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 5px;
+  color: #38bdf8;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-edit-inside-expanded:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.detail-box {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.detail-box-title {
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #94a3b8;
+  margin: 0 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dr-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.88rem;
+}
+
+.dr-item.full {
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.dr-lbl { color: #94a3b8; }
+.dr-val { font-weight: 600; color: #f1f5f9; }
+
+.tc-notes-box {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 12px 14px;
+  border-radius: 8px;
+  border-right: 3px solid #38bdf8;
+}
+
+.badge-rtl-pill {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.badge-rtl-indicator {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.html-rendered-notes {
+  line-height: 1.65;
+  color: #e2e8f0;
+  direction: rtl;
+  text-align: right;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.html-rendered-notes :deep(h2),
+.html-rendered-notes h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #38bdf8;
+  margin: 6px 0 3px 0;
+  direction: rtl;
+  text-align: right;
+}
+
+.html-rendered-notes :deep(h3),
+.html-rendered-notes h3 {
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #7dd3fc;
+  margin: 4px 0 2px 0;
+  direction: rtl;
+  text-align: right;
+}
+
+.html-rendered-notes :deep(p),
+.html-rendered-notes p {
+  margin: 4px 0;
+  direction: rtl;
+  text-align: right;
+}
+
+.html-rendered-notes :deep(.bidi-num),
+.html-rendered-notes .bidi-num {
+  direction: ltr !important;
+  unicode-bidi: isolate !important;
+  display: inline-block !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+}
+
+.html-rendered-notes :deep(ul),
+.html-rendered-notes ul {
+  margin: 4px 22px 4px 0;
+  padding-right: 4px;
+  list-style-type: disc;
+  list-style-position: outside;
+  direction: rtl;
+  text-align: right;
+}
+
+.html-rendered-notes :deep(ol),
+.html-rendered-notes ol {
+  margin: 4px 22px 4px 0;
+  padding-right: 4px;
+  list-style-type: decimal;
+  list-style-position: outside;
+  direction: rtl;
+  text-align: right;
+}
+
+.html-rendered-notes :deep(li),
+.html-rendered-notes li {
+  margin: 2px 0;
+  direction: rtl;
+  text-align: right;
+}
+
+.html-rendered-notes :deep(strong),
+.html-rendered-notes :deep(b),
+.html-rendered-notes strong,
+.html-rendered-notes b {
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.html-rendered-notes :deep(em),
+.html-rendered-notes :deep(i),
+.html-rendered-notes em,
+.html-rendered-notes i {
+  font-style: italic;
+}
+
+.html-rendered-notes :deep(u),
+.html-rendered-notes u {
+  text-decoration: underline;
+}
+
+.html-rendered-notes :deep(strike),
+.html-rendered-notes :deep(s),
+.html-rendered-notes strike,
+.html-rendered-notes s {
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.screenshot-thumbnails {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.thumb-wrap {
+  width: 80px;
+  height: 55px;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumb-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.thumb-wrap:hover .thumb-overlay {
+  opacity: 1;
+}
+
+/* ============================================================================
+   OFFCANVAS FORM DRAWER
+   ============================================================================ */
+.offcanvas-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.offcanvas-drawer {
+  width: 50vw;
+  min-width: 460px;
+  max-width: 95vw;
+  height: 100vh;
+  background: #0f172a;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.6);
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.drawer-title {
+  font-size: 1.3rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.drawer-sub {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin: 2px 0 0 0;
+}
+
+.btn-close {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.btn-close:hover { color: #fff; }
+
+.drawer-body {
+  padding: 22px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  flex: 1;
+}
+
+.form-section {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.015);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.section-legend {
+  font-size: 1.02rem;
+  font-weight: 800;
+  color: #38bdf8;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-num {
+  background: #1e293b;
+  color: #38bdf8;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flex-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.quick-helpers {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-xs-link {
+  background: transparent;
+  border: none;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-xs-link:hover { color: #fff; }
+.btn-xs-link.text-sky { color: #38bdf8; }
+.btn-xs-link.text-sky:hover { color: #7dd3fc; }
+
+.form-label {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.form-label.required::after {
+  content: " *";
+  color: #ef4444;
+}
+
+.form-input, .form-textarea, .form-select {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: #f1f5f9;
+  font-size: 0.92rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.form-input:focus, .form-textarea:focus, .form-select:focus {
+  border-color: #38bdf8;
+}
+
+.form-select {
+  cursor: pointer;
+  appearance: auto;
+  width: 100%;
+}
+
+.form-select option {
+  background: #0f172a;
+  color: #f1f5f9;
+  padding: 8px 12px;
+}
+
+.form-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.form-row-3 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+/* Session Chips Grid */
+.session-chips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.session-chip-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.session-chip-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.session-chip-btn.active {
+  font-weight: 800;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+}
+
+.sc-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.sc-time {
+  font-size: 0.74rem;
+  opacity: 0.8;
+}
+
+/* Converted EST Preview Pill */
+.est-preview-pill {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-size: 0.85rem;
+}
+
+.est-flag {
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.est-val {
+  color: #38bdf8;
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Segmented Control */
+.segmented-control {
+  display: flex;
+  gap: 14px;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.segmented-control.vertical {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.seg-btn {
+  flex: 1;
+  padding: 10px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.94rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.seg-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #f8fafc;
+}
+
+.seg-btn.active {
+  background: #1e293b;
+  border-color: rgba(56, 189, 248, 0.55);
+  color: #38bdf8;
+  font-weight: 700;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
+}
+
+.nested-conditional {
+  background: rgba(0, 0, 0, 0.25);
+  border-left: 3px solid #38bdf8;
+  padding: 14px;
+  border-radius: 0 6px 6px 0;
+}
+
+.alert-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.alert-box.danger {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.alert-box.warn {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.chips-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quick-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.quick-chip:hover {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+}
+
+.quick-chip.active {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  font-weight: 700;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+}
+
+.chip-check {
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: #38bdf8;
+}
+
+.thumb-idx {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #38bdf8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.upload-dropzone {
+  border: 2px dashed rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.upload-dropzone:hover {
+  border-color: #38bdf8;
+}
+
+.btn-thumb-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.85);
+  border: none;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.form-live-summary {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(15, 23, 42, 0.95);
+}
+
+.btn-ghost {
+  padding: 9px 18px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-ghost:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Lightbox */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.9);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lightbox-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+
+.lightbox-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+}
+
+.btn-lightbox-close {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* Toast */
+.toast-popup {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  z-index: 10001;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.toast-popup.success { background: #065f46; color: #34d399; border: 1px solid #10b981; }
+.toast-popup.error { background: #7f1d1d; color: #f87171; border: 1px solid #ef4444; }
+.toast-popup.info { background: #1e3a8a; color: #60a5fa; border: 1px solid #3b82f6; }
+
+/* Transitions */
+.slide-drawer-enter-active, .slide-drawer-leave-active {
+  transition: opacity 0.25s ease;
+}
+.slide-drawer-enter-active .offcanvas-drawer,
+.slide-drawer-leave-active .offcanvas-drawer {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.slide-drawer-enter-from, .slide-drawer-leave-to {
+  opacity: 0;
+}
+.slide-drawer-enter-from .offcanvas-drawer {
+  transform: translateX(100%);
+}
+.slide-drawer-leave-to .offcanvas-drawer {
+  transform: translateX(100%);
+}
+
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* Utilities */
+.text-green { color: #34d399; }
+.text-rose { color: #fb7185; }
+.text-red { color: #f87171; }
+.text-amber { color: #fbbf24; }
+.text-orange { color: #fb923c; }
+.text-purple { color: #c084fc; }
+.text-muted { color: #64748b; }
+.font-bold { font-weight: 700; }
+.space-y-6 > * + * { margin-top: 1.5rem; }
+.space-y-4 > * + * { margin-top: 1rem; }
+.space-y-3 > * + * { margin-top: 0.75rem; }
+.mt-2 { margin-top: 0.5rem; }
+.mt-3 { margin-top: 0.75rem; }
+.hidden { display: none; }
 </style>
-
